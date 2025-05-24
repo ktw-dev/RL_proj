@@ -429,21 +429,47 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
         ta_df = technical_data.reset_index()
         ta_df['Date'] = pd.to_datetime(ta_df['Date'])
         
-        # 뉴스 감성을 DataFrame으로 변환
+        # 뉴스 감성을 모든 TA 날짜에 대해 확장
         if not daily_sentiment.empty:
+            # 원본 뉴스 감성 데이터
+            original_sentiment = daily_sentiment.copy()
+            # TA 데이터의 모든 날짜에 대해 뉴스 감성 확장
+            all_dates = pd.to_datetime(ta_df['Date']).dt.date
+            extended_sentiment = pd.Series(index=all_dates, dtype=float)
+            
+            # 뉴스가 있는 날짜는 실제 값 사용, 없는 날짜는 0.0 사용
+            for date in all_dates:
+                if date in original_sentiment.index:
+                    extended_sentiment[date] = original_sentiment[date]
+                else:
+                    extended_sentiment[date] = 0.0
+            
+            # DataFrame으로 변환
             news_df = pd.DataFrame({
-                'date': daily_sentiment.index,
-                'avg_sentiment_positive': np.where(daily_sentiment > 0, daily_sentiment, 0),
-                'avg_sentiment_negative': np.where(daily_sentiment < 0, -daily_sentiment, 0),
-                'avg_sentiment_neutral': np.where(daily_sentiment == 0, 1.0, 0.0),
-                'news_count': 1,
+                'date': extended_sentiment.index,
+                'avg_sentiment_positive': np.where(extended_sentiment > 0, extended_sentiment, 0),
+                'avg_sentiment_negative': np.where(extended_sentiment < 0, -extended_sentiment, 0),
+                'avg_sentiment_neutral': np.where(extended_sentiment == 0, 1.0, 0.0),
+                'news_count': np.where(extended_sentiment != 0, 1, 0),
                 'weekend_effect_positive': 0.0,
                 'weekend_effect_negative': 0.0,
                 'weekend_effect_neutral': 0.0,
             })
             news_df.set_index('date', inplace=True)
         else:
-            news_df = pd.DataFrame()
+            # 뉴스 데이터가 없으면 모든 TA 날짜에 대해 중립 생성
+            all_dates = pd.to_datetime(ta_df['Date']).dt.date
+            news_df = pd.DataFrame({
+                'date': all_dates,
+                'avg_sentiment_positive': 0.0,
+                'avg_sentiment_negative': 0.0,
+                'avg_sentiment_neutral': 1.0,
+                'news_count': 0,
+                'weekend_effect_positive': 0.0,
+                'weekend_effect_negative': 0.0,
+                'weekend_effect_neutral': 0.0,
+            })
+            news_df.set_index('date', inplace=True)
         
         # 데이터 병합
         combined_df = merge_ta_and_news_data(ta_df, news_df, ticker)
@@ -482,35 +508,122 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
         sequence = ticker_data[-context_length:]
         sequence_tensor = torch.FloatTensor(sequence).unsqueeze(0).to(device)
         
-        # 5. RL State 예측
+        # 5. 정교한 예측 및 신뢰도 계산
         with torch.no_grad():
+            # 5.1. RL State 생성
             rl_state = model(past_values=sequence_tensor)
             rl_state_numpy = rl_state.cpu().numpy().squeeze()
             
-            # 예측 결과 분석 (간단한 휴리스틱)
+            # 5.2. 실제 주가 예측 (10일 후)
+            future_predictions = model.predict_future(sequence_tensor, num_steps=10)
+            future_predictions_numpy = future_predictions.cpu().numpy().squeeze()
+            
+            # 5.3. 다중 샘플링을 통한 불확실성 추정 (Monte Carlo)
+            mc_samples = 20  # Monte Carlo 샘플 수
+            rl_states_mc = []
+            price_predictions_mc = []
+            
+            # Dropout을 활성화하여 다양한 예측 생성
+            model.train()  # Dropout 활성화
+            for _ in range(mc_samples):
+                # with torch.no_grad() 제거하여 dropout이 실제로 작동하도록 함
+                mc_rl_state = model(past_values=sequence_tensor)
+                mc_price_pred = model.predict_future(sequence_tensor, num_steps=10)
+                rl_states_mc.append(mc_rl_state.detach().cpu().numpy().squeeze())
+                price_predictions_mc.append(mc_price_pred.detach().cpu().numpy().squeeze())
+            model.eval()  # 다시 eval 모드로
+            
+            # 5.4. 통계 분석
             rl_state_mean = np.mean(rl_state_numpy)
             rl_state_std = np.std(rl_state_numpy)
             
-            # 방향 예측 (RL state의 평균값 기반)
-            if rl_state_mean > 0.1:
+            # Monte Carlo 샘플들의 분산 계산
+            mc_rl_states = np.array(rl_states_mc)
+            mc_price_preds = np.array(price_predictions_mc)
+            
+            mc_rl_mean_var = np.var([np.mean(sample) for sample in mc_rl_states])
+            mc_price_var = np.var([np.mean(sample[:, 0]) for sample in mc_price_preds])  # Close price 변동성
+            
+            # 5.5. 주가 변화율 예측
+            current_price = scaled_df.iloc[-1, 0]  # 마지막 Close price (scaled)
+            predicted_price = future_predictions_numpy[0, 0]  # 첫 번째 예측 Close price
+            price_change_rate = (predicted_price - current_price) / current_price
+            
+            # 5.6. 정교한 방향 예측
+            direction_signals = []
+            confidence_factors = []
+            
+            # Signal 1: RL State 기반
+            if rl_state_mean > 0.05:
+                direction_signals.append("UP")
+                confidence_factors.append(min(0.4, abs(rl_state_mean) * 4))
+            elif rl_state_mean < -0.05:
+                direction_signals.append("DOWN")
+                confidence_factors.append(min(0.4, abs(rl_state_mean) * 4))
+            else:
+                direction_signals.append("SIDEWAYS")
+                confidence_factors.append(0.1)
+            
+            # Signal 2: 주가 예측 기반
+            if price_change_rate > 0.02:  # 2% 이상 상승
+                direction_signals.append("UP")
+                confidence_factors.append(min(0.4, abs(price_change_rate) * 10))
+            elif price_change_rate < -0.02:  # 2% 이상 하락
+                direction_signals.append("DOWN")
+                confidence_factors.append(min(0.4, abs(price_change_rate) * 10))
+            else:
+                direction_signals.append("SIDEWAYS")
+                confidence_factors.append(0.1)
+            
+            # Signal 3: Monte Carlo 불확실성 기반
+            uncertainty_penalty = min(0.3, mc_rl_mean_var * 1000 + mc_price_var * 100)
+            
+            # 5.7. 최종 방향 및 신뢰도 결정
+            # 방향 결정 (다수결)
+            up_count = direction_signals.count("UP")
+            down_count = direction_signals.count("DOWN")
+            sideways_count = direction_signals.count("SIDEWAYS")
+            
+            if up_count > down_count and up_count > sideways_count:
                 predicted_direction = "UP"
-                confidence = min(0.9, abs(rl_state_mean) * 2)
-            elif rl_state_mean < -0.1:
-                predicted_direction = "DOWN" 
-                confidence = min(0.9, abs(rl_state_mean) * 2)
+            elif down_count > up_count and down_count > sideways_count:
+                predicted_direction = "DOWN"
             else:
                 predicted_direction = "SIDEWAYS"
-                confidence = 0.3
             
-            print(f"TST RL State: shape={rl_state_numpy.shape}, mean={rl_state_mean:.4f}, std={rl_state_std:.4f}")
-            print(f"Predicted direction: {predicted_direction}, confidence: {confidence:.2f}")
+            # 신뢰도 계산
+            base_confidence = np.mean(confidence_factors)
+            
+            # 신호 일치도 보너스
+            max_signal_count = max(up_count, down_count, sideways_count)
+            signal_consistency = max_signal_count / len(direction_signals)
+            consistency_bonus = (signal_consistency - 0.5) * 0.4  # 0.5는 랜덤, 1.0은 완전 일치
+            
+            # 불확실성 페널티 적용
+            final_confidence = base_confidence + consistency_bonus - uncertainty_penalty
+            final_confidence = max(0.1, min(0.95, final_confidence))  # 0.1~0.95 범위로 제한
+            
+            print(f"=== Advanced TST Prediction Analysis ===")
+            print(f"RL State: mean={rl_state_mean:.4f}, std={rl_state_std:.4f}")
+            print(f"Price Change Rate: {price_change_rate*100:.2f}%")
+            print(f"Direction Signals: {direction_signals}")
+            print(f"Signal Consistency: {signal_consistency:.2f}")
+            print(f"MC Uncertainty: RL={mc_rl_mean_var:.6f}, Price={mc_price_var:.6f}")
+            print(f"Uncertainty Penalty: {uncertainty_penalty:.3f}")
+            print(f"Base Confidence: {base_confidence:.3f}")
+            print(f"Final Confidence: {final_confidence:.3f}")
+            print(f"Predicted Direction: {predicted_direction}")
             
             return {
                 "predicted_direction": predicted_direction,
-                "confidence": confidence,
+                "confidence": final_confidence,
                 "rl_state": rl_state_numpy,
                 "rl_state_mean": rl_state_mean,
-                "rl_state_std": rl_state_std
+                "rl_state_std": rl_state_std,
+                "price_change_rate": price_change_rate,
+                "signal_consistency": signal_consistency,
+                "uncertainty_penalty": uncertainty_penalty,
+                "mc_variance": {"rl": mc_rl_mean_var, "price": mc_price_var}
             }
         
     except Exception as e:
@@ -599,16 +712,73 @@ def generate_final_recommendation(tst_prediction: dict, rl_decision: dict, ticke
     Combines TST insights and RL agent action into human-readable advice.
     Returns: A string with the recommendation.
     """
-    print("\n--- 8. Generating Final Trading Recommendation ---")
-    recommendation = f"--- Trading Recommendation for {ticker} ---\n"
-    recommendation += f"Market Outlook (TST): {tst_prediction.get('predicted_direction', 'N/A')} (Confidence: {tst_prediction.get('confidence', 0)*100:.0f}%)\n"
-    if tst_prediction.get('rl_state') is not None:
-        recommendation += f"TST RL State Analysis: Mean={tst_prediction.get('rl_state_mean', 0):.4f}, Std={tst_prediction.get('rl_state_std', 0):.4f}\n"
+    print("\n--- 8. Generating Enhanced Trading Recommendation ---")
     
-    recommendation += f"RL Agent Action: {rl_decision.get('action', 'N/A')}\n"
-    recommendation += f"Reason: {rl_decision.get('reason', 'N/A')}\n"
+    # 신뢰도 레벨 분류
+    confidence = tst_prediction.get('confidence', 0)
+    if confidence >= 0.7:
+        confidence_level = "HIGH"
+        confidence_emoji = "🔥"
+    elif confidence >= 0.5:
+        confidence_level = "MEDIUM"
+        confidence_emoji = "⚖️"
+    else:
+        confidence_level = "LOW"
+        confidence_emoji = "⚠️"
+    
+    recommendation = f"=== 📊 Advanced Trading Recommendation for {ticker} ===\n\n"
+    
+    # TST 모델 분석
+    recommendation += f"🤖 **TST Model Analysis**\n"
+    recommendation += f"   Direction: {tst_prediction.get('predicted_direction', 'N/A')}\n"
+    recommendation += f"   Confidence: {confidence*100:.1f}% ({confidence_level}) {confidence_emoji}\n"
+    
+    # 상세 분석 정보
+    if tst_prediction.get('price_change_rate') is not None:
+        price_change = tst_prediction.get('price_change_rate', 0) * 100
+        recommendation += f"   Expected Price Movement: {price_change:+.2f}%\n"
+    
+    if tst_prediction.get('signal_consistency') is not None:
+        consistency = tst_prediction.get('signal_consistency', 0) * 100
+        recommendation += f"   Signal Consistency: {consistency:.1f}%\n"
+    
+    if tst_prediction.get('uncertainty_penalty') is not None:
+        uncertainty = tst_prediction.get('uncertainty_penalty', 0)
+        recommendation += f"   Model Uncertainty: {uncertainty:.3f}\n"
+    
+    # RL State 정보
+    if tst_prediction.get('rl_state') is not None:
+        recommendation += f"   RL State: Mean={tst_prediction.get('rl_state_mean', 0):.4f}, Std={tst_prediction.get('rl_state_std', 0):.4f}\n"
+    
+    recommendation += f"\n🎯 **RL Agent Decision**\n"
+    recommendation += f"   Action: {rl_decision.get('action', 'N/A')}\n"
+    recommendation += f"   Reasoning: {rl_decision.get('reason', 'N/A')}\n"
+    
     if rl_decision.get('target_price') is not None:
-        recommendation += f"Suggested Price Level: {rl_decision['target_price']:.2f}\n"
+        recommendation += f"   Target Price: ${rl_decision['target_price']:.2f}\n"
+    
+    # 종합 조언
+    recommendation += f"\n💡 **Investment Advice**\n"
+    
+    action = rl_decision.get('action', 'HOLD')
+    if action == "BUY" and confidence >= 0.6:
+        recommendation += f"   ✅ Strong BUY signal with good confidence\n"
+    elif action == "BUY" and confidence < 0.6:
+        recommendation += f"   ⚠️ BUY signal but with limited confidence - consider smaller position\n"
+    elif action == "SELL" and confidence >= 0.6:
+        recommendation += f"   🔴 Strong SELL signal with good confidence\n"
+    elif action == "SELL" and confidence < 0.6:
+        recommendation += f"   ⚠️ SELL signal but with limited confidence - consider partial exit\n"
+    else:
+        recommendation += f"   ⏸️ HOLD recommended - wait for clearer signals\n"
+    
+    # 리스크 경고
+    if confidence < 0.4:
+        recommendation += f"   ⚠️ **HIGH UNCERTAINTY**: Consider waiting for better signals\n"
+    elif tst_prediction.get('uncertainty_penalty', 0) > 0.2:
+        recommendation += f"   📉 **MODEL UNCERTAINTY**: Multiple signals show high variance\n"
+    
+    recommendation += f"\n" + "="*60
     
     print(recommendation)
     return recommendation
@@ -662,7 +832,13 @@ def run_trading_bot():
         ta_df['Date'] = pd.to_datetime(ta_df['Date'])
         ta_df.set_index('Date', inplace=True)
         
-        # 최근 days_to_analyze일 필터링
+        # TST 모델을 위한 전체 데이터 준비 (60일 컨텍스트 필요)
+        full_technical_data = ta_df.copy()
+        full_technical_data.index = pd.to_datetime(full_technical_data.index).date
+        full_technical_data.index.name = 'Date'
+        full_technical_data.fillna(0.0, inplace=True)
+        
+        # RL State 구성을 위한 최근 7일 데이터
         relevant_dates = []
         current_d = current_utc_time.date() - timedelta(days=1)
         while len(relevant_dates) < days_to_analyze:
@@ -671,20 +847,21 @@ def run_trading_bot():
             current_d -= timedelta(days=1)
         relevant_dates.sort()
         
-        technical_data = ta_df.reindex(pd.to_datetime(relevant_dates))
-        technical_data.index = pd.to_datetime(technical_data.index).date
-        technical_data.index.name = 'Date'
-        technical_data.fillna(0.0, inplace=True)
+        recent_technical_data = ta_df.reindex(pd.to_datetime(relevant_dates))
+        recent_technical_data.index = pd.to_datetime(recent_technical_data.index).date
+        recent_technical_data.index.name = 'Date'
+        recent_technical_data.fillna(0.0, inplace=True)
         
         print(f"✅ Final data prepared:")
-        print(f"  TA data: {technical_data.shape}")
+        print(f"  Full TA data (for TST): {full_technical_data.shape}")
+        print(f"  Recent TA data (for RL): {recent_technical_data.shape}")
         print(f"  News sentiment: {len(daily_sentiment_scores)} entries")
         
-        # 5. Predict price movement using TST model
-        tst_price_prediction = predict_price_with_tst_model(technical_data, daily_sentiment_scores, ticker)
+        # 5. Predict price movement using TST model (전체 데이터 사용)
+        tst_price_prediction = predict_price_with_tst_model(full_technical_data, daily_sentiment_scores, ticker)
         
-        # 6. Construct the state vector for the RL agent
-        rl_state = construct_rl_state_vector(current_state, technical_data, daily_sentiment_scores, tst_price_prediction)
+        # 6. Construct the state vector for the RL agent (최근 데이터 사용)
+        rl_state = construct_rl_state_vector(current_state, recent_technical_data, daily_sentiment_scores, tst_price_prediction)
         
         # 7. Get action from the chosen RL agent
         rl_action = get_action_from_rl_agent(rl_state, current_state["chosen_agent"])
