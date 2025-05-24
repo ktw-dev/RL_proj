@@ -151,6 +151,9 @@ data/processed/
 *.parquet
 *.feather
 
+# Large historical data files
+all_tickers_historical_features.csv
+
 # Output directories
 tst_predictions/
 tst_model_output/
