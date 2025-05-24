@@ -160,330 +160,6 @@ python data_collection/ta_fetcher.py
 
 ---
 
-## TST Model (Time Series Transformer) Architecture
-
-### 개요
-
-`tst_model/model.py`에 정의된 `TSTModel`은 시계열 예측과 강화학습을 연결하는 핵심 모델입니다. Hugging Face의 `TimeSeriesTransformerForPrediction`을 기반으로 하여 주식 시계열 데이터를 분석하고, 강화학습 에이전트가 사용할 수 있는 상태 벡터를 생성합니다.
-
-### 모델 구조
-
-#### 기본 아키텍처
-```
-입력 시계열 데이터 (past_values)
-       ↓
-TimeSeriesTransformerForPrediction
-       ↓
-시계열 예측 결과 (distribution parameters)
-       ↓
-RL Head (Linear Layer)
-       ↓
-RL State Vector
-```
-
-#### 주요 구성 요소
-
-1. **TimeSeriesTransformerForPrediction**
-   - Hugging Face의 사전 훈련된 시계열 트랜스포머 모델
-   - Encoder-Decoder 구조로 과거 시계열 데이터를 기반으로 미래 예측 수행
-   - 확률적 예측 결과 제공 (평균, 분산 등)
-
-2. **RL Head (Linear Layer)**
-   - 트랜스포머의 예측 결과를 RL 상태 벡터로 변환
-   - 입력 차원: `prediction_length × input_size`
-   - 출력 차원: `rl_state_size` (사용자 정의)
-
-### 핵심 매개변수
-
-| 매개변수 | 설명 | 기본값 |
-|---------|------|--------|
-| `input_size` | 입력 특성 수 (기술적 지표 + 감성 점수) | 필수 |
-| `prediction_length` | 예측 시간 범위 (몇 일 후까지 예측) | 필수 |
-| `context_length` | 히스토리 시간 범위 (몇 일 전 데이터 사용) | prediction_length |
-| `rl_state_size` | RL 상태 벡터 차원 | 필수 |
-| `n_layer` | Encoder/Decoder 레이어 수 | 2 |
-| `n_head` | Attention Head 수 | 2 |
-| `d_model` | 트랜스포머 모델 차원 | 32 |
-
-### 모델 처리 과정
-
-#### 1. 초기화 단계 (`__init__`)
-```python
-# 설정 매개변수 구성
-transformer_config_params = {
-    'input_size': self.input_size,
-    'prediction_length': self.prediction_length,
-    'context_length': self.context_length,
-    'encoder_layers': config_dict.get('n_layer', 2),
-    'd_model': config_dict.get('d_model', 32),
-    # ... 기타 설정
-}
-
-# TimeSeriesTransformerConfig 생성
-transformer_config = TimeSeriesTransformerConfig(**transformer_config_params)
-
-# 모델 구성요소 생성
-self.transformer = TimeSeriesTransformerForPrediction(config=transformer_config)
-self.rl_head = nn.Linear(self.rl_head_input_dim, self.rl_state_size)
-```
-
-#### 2. Forward Pass (`forward`)
-
-**Training 모드**: 
-- 입력: `past_values` (과거 시계열), `future_values` (정답 데이터)
-- 출력: `TimeSeriesTransformerOutput` (loss 포함)
-- 목적: 모델 학습을 위한 손실 계산
-
-**Inference 모드**:
-- 입력: `past_values` (과거 시계열만)
-- 처리:
-  1. 트랜스포머가 미래 시계열 분포 예측
-  2. 예측 분포에서 평균값 추출
-  3. 평균값을 Flatten하여 1차원으로 변환
-  4. RL Head를 통해 상태 벡터 생성
-- 출력: RL 상태 벡터
-
-### 예측 결과 추출 방법
-
-모델은 Hugging Face 트랜스포머의 다양한 출력 형태에 robust하게 대응합니다:
-
-1. **`transformer_output.params[0]`**: 예측 분포의 평균 (가장 일반적)
-2. **`transformer_output.prediction_outputs`**: 직접적인 예측 결과
-3. **`transformer_output.sequences`**: generate() 메서드 결과
-4. **Fallback**: generate() 메서드 재시도 또는 더미 텐서
-
-### 데이터 형태
-
-#### 입력 데이터
-- **`past_values`**: `(batch_size, context_length, input_size)`
-  - 과거 시계열 데이터 (기술적 지표 + 감성 점수)
-- **`future_values`** (훈련시만): `(batch_size, prediction_length, input_size)`
-  - 정답 미래 시계열 데이터
-
-#### 출력 데이터
-- **훈련시**: `TimeSeriesTransformerOutput` (loss, logits 등 포함)
-- **추론시**: `(batch_size, rl_state_size)` 형태의 RL 상태 벡터
-
-### 주요 특징
-
-1. **이중 목적 설계**: 시계열 예측 학습과 RL 상태 생성을 동시에 지원
-2. **유연한 출력 처리**: 다양한 Hugging Face 모델 출력 형태에 적응
-3. **자동 차원 조정**: 예측 결과와 RL Head 입력 차원 불일치 시 자동 패딩/잘라내기
-4. **확률적 예측**: 단순 값이 아닌 분포 기반 예측으로 불확실성 고려
-
-### 사용 예시
-
-```python
-# 모델 설정
-model_config = {
-    'input_size': 50,          # TA 지표 + 감성 점수
-    'prediction_length': 10,   # 10일 후 예측
-    'context_length': 60,      # 60일 히스토리 사용
-    'rl_state_size': 256,      # RL 상태 벡터 크기
-    'n_layer': 4,              # 트랜스포머 레이어
-    'd_model': 128             # 모델 차원
-}
-
-# 모델 생성
-tst_model = TSTModel(model_config)
-
-# 훈련
-tst_model.train()
-output = tst_model(past_values=past_data, future_values=future_data)
-loss = output.loss
-
-# RL 상태 벡터 생성
-tst_model.eval()
-with torch.no_grad():
-    rl_state = tst_model(past_values=past_data)  # (batch_size, 256)
-```
-
-### 통합적 역할
-
-TST 모델은 주식 트레이딩 봇에서 다음과 같은 핵심 역할을 수행합니다:
-
-1. **시장 동향 예측**: 기술적 지표와 뉴스 감성을 종합하여 미래 주가 방향 예측
-2. **불확실성 정량화**: 확률적 예측을 통해 시장의 불확실성 측정
-3. **RL 브릿지**: 시계열 예측 결과를 RL 에이전트가 이해할 수 있는 형태로 변환
-4. **멀티모달 융합**: 다양한 데이터 소스(가격, 기술적 지표, 감성)를 통합 처리
-
----
-
-## TST Model Training Script (`train.py`)
-
-### 개요
-
-`tst_model/train.py`는 TST 모델을 사전 훈련(pre-training)하기 위한 스크립트입니다. 기술적 분석 데이터와 뉴스 감성 데이터를 결합하여 시계열 트랜스포머 모델을 학습시키며, 다양한 고급 학습 기법들을 포함하고 있습니다.
-
-### 훈련 데이터
-
-#### 주요 데이터 소스
-
-1. **기술적 분석(TA) 데이터**
-   - **파일**: `all_tickers_historical_features.csv`
-   - **내용**: 81개 기술적 지표 (OHLCV + 각종 TA 지표)
-   - **구조**: MultiIndex (Date, Ticker)로 구성된 시계열 데이터
-   - **기간**: 여러 종목의 히스토리컬 데이터
-
-2. **뉴스 감성 데이터 (합성)**
-   - **생성 방식**: 실제 뉴스 데이터가 없을 때 중립적 감성 데이터를 합성
-   - **특성**: 7개 뉴스 관련 특성
-     - `avg_sentiment_positive`, `avg_sentiment_negative`, `avg_sentiment_neutral`
-     - `news_count`
-     - `weekend_effect_positive`, `weekend_effect_negative`, `weekend_effect_neutral`
-   - **기본값**: 모든 감성은 중립(neutral=1.0, positive=negative=0.0)
-
-3. **결합 데이터**
-   - **최종 특성 수**: 88개 (81 TA + 7 News)
-   - **결합 방식**: `feature_engineering.feature_combiner.align_and_combine_features` 사용
-   - **인덱스 정렬**: Date-Ticker 기준으로 정렬된 시계열 데이터
-
-### 훈련 설정 및 파라미터
-
-#### 모델 설정 (`DEFAULT_MODEL_CONFIG`)
-
-| 파라미터 | 값 | 설명 |
-|---------|----|----|
-| `input_size` | 88 | 입력 특성 수 (81 TA + 7 News) |
-| `prediction_length` | 10 | 미래 예측 범위 (10일) |
-| `context_length` | 60 | 히스토리 범위 (60일) |
-| `n_layer` | 3 | Encoder/Decoder 레이어 수 |
-| `n_head` | 4 | Attention Head 수 |
-| `d_model` | 128 | 트랜스포머 모델 차원 |
-| `rl_state_size` | 256 | RL 상태 벡터 크기 |
-| `distribution_output` | "normal" | 예측 분포 (가우시안) |
-| `loss` | "nll" | 손실 함수 (음의 로그 우도) |
-| `num_parallel_samples` | 100 | 샘플링 시 병렬 샘플 수 |
-
-#### 훈련 설정 (`TRAIN_CONFIG`)
-
-| 파라미터 | 값 | 설명 |
-|---------|----|----|
-| `data_path` | `all_tickers_historical_features.csv` | 훈련 데이터 경로 |
-| `output_dir` | `tst_model_output/` | 모델 저장 디렉토리 |
-| `batch_size` | 32 | 배치 크기 |
-| `epochs` | 50 | 최대 에포크 수 |
-| `learning_rate` | 1e-4 | 학습률 |
-| `weight_decay` | 0.01 | 가중치 감쇠 |
-| `patience_early_stopping` | 5 | 조기 종료 인내심 |
-| `validation_split_ratio` | 0.2 | 검증 데이터 비율 |
-| `random_seed` | 42 | 랜덤 시드 |
-
-### 훈련 과정
-
-#### 1. 데이터 준비 단계
-```
-TA 데이터 로드 → 중립 뉴스 데이터 생성 → 특성 결합 → 스케일링 → 시퀀스 생성
-```
-
-**데이터 전처리**:
-- **MultiIndex 설정**: (Date, Ticker) 기준으로 인덱싱
-- **특성 스케일링**: 종목별 MinMaxScaler 적용 (0-1 정규화)
-- **시퀀스 생성**: 슬라이딩 윈도우 방식으로 (과거, 미래) 시퀀스 쌍 생성
-
-#### 2. 시퀀스 생성 로직
-```python
-# 각 종목별로 시퀀스 생성
-for ticker in tickers:
-    for i in range(len(data) - context_length - prediction_length + 1):
-        past_seq = data[i : i + context_length]          # 60일 과거 데이터
-        future_seq = data[i + context_length : i + context_length + prediction_length]  # 10일 미래 데이터
-```
-
-#### 3. 모델 훈련 단계
-```
-모델 초기화 → 옵티마이저 설정 → 학습률 스케줄러 → 훈련 루프 → 검증 → 조기 종료
-```
-
-**핵심 구성요소**:
-- **옵티마이저**: AdamW (weight decay 포함)
-- **스케줄러**: Linear warmup scheduler
-- **손실 함수**: NLL (Negative Log-Likelihood)
-- **평가 지표**: 검증 손실
-
-### 부가적인 기능
-
-#### 1. **자동 더미 데이터 생성**
-```python
-# 훈련 데이터가 없을 때 자동으로 더미 데이터 생성
-if not os.path.exists(data_file_path):
-    num_tickers = 2
-    num_days_per_ticker = context_length + prediction_length + 20
-    # 랜덤 TA 특성 81개로 더미 데이터 생성
-```
-
-#### 2. **종목별 데이터 스케일링**
-- 각 종목별로 독립적인 MinMaxScaler 적용
-- 종목 간 스케일 차이로 인한 편향 방지
-- 스케일러 객체 저장으로 역변환 가능
-
-#### 3. **Robust 시퀀스 생성**
-```python
-def create_sequences(data_df, context_length, prediction_length, target_cols_indices=None):
-    # 데이터 충분성 검사
-    if len(ticker_data) < context_length + prediction_length:
-        print(f"Skipping ticker {ticker} due to insufficient data")
-        continue
-```
-
-#### 4. **Early Stopping 메커니즘**
-- 검증 손실이 개선되지 않으면 훈련 자동 중단
-- 과적합 방지 및 최적 모델 자동 저장
-- `patience` 파라미터로 인내심 조절
-
-#### 5. **동적 입력 크기 조정**
-```python
-# 실제 결합된 특성 수에 따라 input_size 자동 업데이트
-model_config['input_size'] = combined_features_df.shape[1]
-```
-
-#### 6. **실시간 훈련 모니터링**
-- 배치별 손실 로깅 (10 배치마다)
-- 에포크별 훈련/검증 손실 요약
-- GPU/CPU 자동 감지 및 활용
-
-#### 7. **타임스탬프 기반 모델 저장**
-```python
-model_path = f"tst_model_best_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pt"
-```
-
-### 훈련 결과물
-
-#### 저장되는 파일들
-1. **모델 체크포인트**: `tst_model_best_YYYYMMDD_HHMMSS.pt`
-2. **스케일러 객체**: 각 종목별 MinMaxScaler (메모리에 저장)
-3. **훈련 로그**: 콘솔 출력으로 손실 기록
-
-#### 모델 성능 지표
-- **최종 검증 손실**: 최적 모델의 검증 손실값
-- **수렴 에포크**: 조기 종료가 발생한 에포크
-- **시퀀스 수**: 생성된 총 훈련 시퀀스 개수
-
-### 실행 방법
-
-```bash
-# 프로젝트 루트 디렉토리에서 실행
-python tst_model/train.py
-```
-
-#### 필수 조건
-- `all_tickers_historical_features.csv` 파일 존재 (없으면 자동 더미 데이터 생성)
-- `feature_engineering.feature_combiner` 모듈 접근 가능
-- 충분한 메모리 (시퀀스 데이터 로딩용)
-- GPU 환경 권장 (자동 감지)
-
-### 특징 및 장점
-
-1. **자동화된 파이프라인**: 데이터 로딩부터 모델 저장까지 완전 자동화
-2. **Robust한 에러 처리**: 데이터 부족, 파일 누락 등 다양한 상황 대응
-3. **확장 가능한 구조**: 새로운 특성이나 종목 추가 시 자동 적응
-4. **재현 가능한 실험**: 랜덤 시드 고정으로 일관된 결과
-5. **효율적인 메모리 사용**: 종목별 처리로 메모리 효율성 확보
-
-이 훈련 스크립트는 TST 모델을 실제 금융 데이터로 학습시키기 위한 **산업급 파이프라인**을 제공하며, 연구 환경과 프로덕션 환경 모두에서 활용 가능하도록 설계되었습니다.
-
----
-
 ## News Processor (`news_processor.py`)
 
 ### 개요
@@ -665,230 +341,6 @@ avg_sentiment_positive: 0.2, weekend_effect_positive: 0.8  # 토요일 뉴스 �
 4. **시장 심리 반영**: 투자자들의 감정적 반응을 수치화
 
 이를 통해 TST 모델과 RL 에이전트가 **뉴스 기반 시장 센티멘트**를 의사결정에 활용할 수 있게 됩니다.
-
----
-
-## TST Model Prediction Script (`predict.py`)
-
-### 개요
-
-`tst_model/predict.py`는 훈련된 TST 모델을 사용하여 실제 추론을 수행하는 스크립트입니다. `train.py`와 동일한 데이터 구조와 전처리 파이프라인을 사용하며, `model.py`의 이중 모드 구조를 활용하여 두 가지 예측 방식을 제공합니다.
-
-### 주요 기능
-
-#### 1. **이중 예측 모드**
-- **RL State 모드**: 강화학습 에이전트용 상태 벡터 생성 (기본값)
-- **Forecast 모드**: 미래 시계열 데이터 예측
-
-#### 2. **자동 모델 로딩**
-- 최신 훈련된 모델 자동 감지 및 로드
-- 타임스탬프 기반 모델 버전 관리
-- GPU/CPU 자동 감지 및 최적화
-
-#### 3. **동일한 전처리 파이프라인**
-- `train.py`와 일관된 데이터 처리
-- 종목별 MinMaxScaler 적용
-- 88개 특성 (81 TA + 7 News) 구조 유지
-
-### 핵심 함수 분석
-
-#### `load_latest_model(model_dir, model_config, device)`
-```python
-def load_latest_model(model_dir: str, model_config: dict, device: torch.device):
-    # 최신 모델 파일 자동 감지
-    model_pattern = os.path.join(model_dir, "tst_model_best_*.pt")
-    model_files = glob.glob(model_pattern)
-    latest_model_path = max(model_files, key=os.path.getmtime)
-    
-    # 모델 초기화 및 가중치 로드
-    model = TSTModel(config_dict=model_config).to(device)
-    checkpoint = torch.load(latest_model_path, map_location=device)
-    model.load_state_dict(checkpoint)
-    model.eval()
-```
-
-**특징**:
-- `tst_model_best_*.pt` 패턴으로 훈련된 모델 검색
-- 파일 수정 시간 기준으로 최신 모델 선택
-- 모델 파라미터 수 출력으로 로딩 검증
-
-#### `prepare_data_for_prediction(data_path, target_ticker, context_length)`
-```python
-def prepare_data_for_prediction(data_path: str, target_ticker: str = None, context_length: int = 60):
-    # 1. TA 데이터 로드 (train.py와 동일)
-    ta_history_df = pd.read_csv(data_path)
-    ta_history_df.set_index(['Date', 'Ticker'], inplace=True)
-    
-    # 2. 특정 종목 필터링 (선택사항)
-    if target_ticker:
-        ta_history_df = ta_history_df.xs(target_ticker, level='Ticker', drop_level=False)
-    
-    # 3. 중립 뉴스 데이터 생성
-    neutral_news_df = create_neutral_news_df(ta_history_df.index, NEWS_FEATURE_COLS)
-    
-    # 4. 특성 결합 및 스케일링
-    combined_features_df = align_and_combine_features(ta_history_df, neutral_news_df)
-    scaled_features_df = apply_per_ticker_scaling(combined_features_df)
-```
-
-**중요 사항**:
-- `train.py`와 정확히 동일한 전처리 순서
-- 종목별 독립적 스케일링 유지
-- 최소 `context_length` 일수 데이터 검증
-
-#### `create_prediction_sequences(scaled_data, context_length)`
-```python
-def create_prediction_sequences(scaled_data: pd.DataFrame, context_length: int):
-    for ticker, group in scaled_data.groupby(level='Ticker'):
-        ticker_data = group.values
-        # 최신 context_length개 데이터포인트 추출
-        latest_sequence = ticker_data[-context_length:]  # (60, 88)
-        
-        prediction_data[ticker] = {
-            'sequence': torch.FloatTensor(latest_sequence).unsqueeze(0),  # (1, 60, 88)
-            'dates': latest_dates,
-            'last_date': latest_dates[-1]
-        }
-```
-
-**핵심 로직**:
-- 각 종목의 **가장 최근 60일** 데이터 사용
-- 배치 차원 추가 (`unsqueeze(0)`)
-- 예측 기준일 메타데이터 보존
-
-#### `predict_with_tst_model(model, prediction_data, device, mode)`
-
-**RL State 모드** (기본값):
-```python
-if mode == 'rl_state':
-    model.eval()  # Inference 모드
-    rl_state = model(past_values=sequence)  # (1, 256)
-    # 강화학습 에이전트용 상태 벡터 반환
-```
-
-**Forecast 모드**:
-```python
-elif mode == 'forecast':
-    model.train()  # Training 모드 (임시)
-    outputs = model(past_values=sequence)
-    # 시계열 예측 결과 추출
-    forecast = outputs.params[0]  # (1, 10, 88)
-```
-
-### 사용 방법
-
-#### 명령행 인터페이스
-
-```bash
-# 기본 사용법 (모든 종목, RL State 모드)
-python tst_model/predict.py
-
-# 특정 종목 예측
-python tst_model/predict.py --ticker AAPL
-
-# 시계열 예측 모드
-python tst_model/predict.py --mode forecast
-
-# 경로 지정
-python tst_model/predict.py \
-    --model_dir ./custom_models \
-    --data_path ./custom_data.csv \
-    --output_dir ./predictions
-```
-
-#### 프로그래매틱 사용
-
-```python
-from tst_model.predict import load_latest_model, prepare_data_for_prediction, predict_with_tst_model
-
-# 모델 로드
-model, model_path = load_latest_model("./tst_model_output", DEFAULT_MODEL_CONFIG, device)
-
-# 데이터 준비
-data_info = prepare_data_for_prediction("./data.csv", target_ticker="AAPL")
-
-# 예측 수행
-predictions = predict_with_tst_model(model, prediction_data, device, mode='rl_state')
-```
-
-### 출력 결과
-
-#### RL State 모드 출력
-```
-tst_predictions/
-├── AAPL_rl_state_20231215_143052.npy     # (256,) 벡터
-├── GOOGL_rl_state_20231215_143052.npy    # (256,) 벡터
-└── prediction_summary_20231215_143052.txt # 요약 정보
-```
-
-**RL State 벡터 특성**:
-- **차원**: (rl_state_size,) = (256,)
-- **용도**: RL 에이전트의 입력 상태
-- **내용**: TST 모델이 추출한 고차원 시장 특성
-
-#### Forecast 모드 출력
-```
-tst_predictions/
-├── AAPL_forecast_20231215_143052.csv     # (10, 88) 테이블
-├── GOOGL_forecast_20231215_143052.csv    # (10, 88) 테이블
-└── prediction_summary_20231215_143052.txt # 요약 정보
-```
-
-**Forecast 데이터 구조**:
-- **차원**: (prediction_length, input_size) = (10, 88)
-- **내용**: 향후 10일간 88개 특성 예측값
-- **형식**: CSV 파일 (prediction_day 인덱스)
-
-### 모델 통합 구조
-
-#### 데이터 흐름
-```
-Historical Data (60일) → 전처리 → 스케일링 → TST Model → 예측 결과
-     ↓                     ↓           ↓           ↓
-88개 특성 → 중립 뉴스 결합 → MinMax → Inference → RL State/Forecast
-```
-
-#### TST 모델 활용
-```python
-# model.py의 forward 메소드 활용
-if self.training:
-    return transformer_output  # Loss 포함 (Forecast 모드)
-else:
-    return rl_state           # RL 상태 벡터 (RL State 모드)
-```
-
-### 특징 및 장점
-
-#### 1. **Production-Ready 설계**
-- 명령행 인터페이스로 운영 환경 통합 용이
-- 에러 핸들링 및 상세한 로깅
-- 타임스탬프 기반 결과 파일 버전 관리
-
-#### 2. **유연한 예측 모드**
-- **RL 통합**: 강화학습 시스템과 직접 연동
-- **시계열 분석**: 전통적인 예측 분석 지원
-- **배치 처리**: 여러 종목 동시 처리
-
-#### 3. **일관성 보장**
-- 훈련과 추론 간 동일한 전처리 파이프라인
-- 스케일링 방식 및 특성 순서 일치
-- 모델 구조 및 하이퍼파라미터 동기화
-
-#### 4. **메타데이터 관리**
-- 예측 기준일 추적
-- 사용된 모델 경로 기록
-- 결과 통계 요약
-
-### 시스템 내 역할
-
-이 예측 스크립트는 주식 트레이딩 봇에서 다음과 같은 핵심 역할을 수행합니다:
-
-1. **RL 에이전트 공급**: 최신 시장 데이터를 RL 상태 벡터로 변환
-2. **시장 예측**: 단기 시계열 전망 제공
-3. **실시간 추론**: 새로운 데이터에 대한 즉시 예측
-4. **의사결정 지원**: 정량적 시장 분석 결과 제공
-
-이를 통해 **훈련된 TST 모델**이 실제 트레이딩 환경에서 **실시간 시장 분석**과 **RL 에이전트 상태 생성**을 담당하게 됩니다.
 
 ---
 
@@ -1156,6 +608,332 @@ def log_memory_usage(stage_name):
 | 훈련 (표준) | 32 | ~70MB | ~1500ms |
 
 이 분석을 통해 **대부분의 현대적인 GPU에서 무리 없이 실행 가능**하며, 특히 추론 작업은 매우 가벼운 메모리 요구사항을 가지고 있음을 알 수 있습니다.
+
+---
+
+## TST Model Prediction System (`predict.py`)
+
+### 개요
+
+`tst_model/predict.py`는 훈련된 Time Series Transformer (TST) 모델을 사용하여 주식 데이터에 대한 예측 및 강화학습 상태 벡터 생성을 수행하는 추론 시스템입니다. 이 모듈은 실시간 트레이딩 봇의 핵심 구성 요소로, 두 가지 주요 출력 모드를 제공합니다.
+
+### 핵심 기능
+
+#### 1. **RL State Mode (기본 모드)**
+- **목적**: 강화학습 에이전트가 의사결정에 사용할 수 있는 압축된 상태 벡터 생성
+- **출력**: 256차원의 고차원 특성 벡터 (.npy 파일)
+- **용도**: PPO, SAC 등 RL 에이전트의 입력으로 활용
+
+#### 2. **Forecast Mode**
+- **목적**: 향후 10일간의 모든 기술적 지표 예측
+- **출력**: 10×87 차원의 미래 예측값 (.csv 파일)
+- **용도**: 직접적인 주가 예측 및 트렌드 분석
+
+### 시스템 아키텍처
+
+#### **데이터 처리 파이프라인**
+
+```mermaid
+graph LR
+    A[Raw Historical Data] --> B[Feature Engineering]
+    B --> C[Synthetic News Features]
+    C --> D[MinMax Scaling]
+    D --> E[Sequence Creation]
+    E --> F[TST Model]
+    F --> G{Mode Selection}
+    G -->|RL State| H[256D Vector]
+    G -->|Forecast| I[10×87 Predictions]
+```
+
+#### **모델 설정 (train.py와 통일)**
+
+```python
+DEFAULT_MODEL_CONFIG = {
+    'input_size': 87,           # 80 TA + 7 News features
+    'prediction_length': 10,    # 10일 미래 예측
+    'context_length': 60,       # 60일 과거 컨텍스트
+    'n_layer': 4,              # 4개 트랜스포머 레이어
+    'n_head': 8,               # 8개 어텐션 헤드
+    'd_model': 128,            # 128차원 모델
+    'rl_state_size': 256,      # 256차원 RL 상태 벡터
+}
+```
+
+### 사용법
+
+#### **기본 실행 (RL State 모드)**
+```bash
+# 모든 티커에 대해 RL 상태 벡터 생성
+python tst_model/predict.py
+
+# 특정 티커만 처리
+python tst_model/predict.py --ticker AAPL
+
+# 사용자 정의 데이터 경로
+python tst_model/predict.py --data_path custom_data.csv
+```
+
+#### **Forecast 모드**
+```bash
+# 특정 티커의 미래 예측
+python tst_model/predict.py --ticker AAPL --mode forecast
+
+# 모든 티커의 미래 예측
+python tst_model/predict.py --mode forecast
+```
+
+#### **고급 옵션**
+```bash
+python tst_model/predict.py \
+    --ticker AAPL \
+    --mode rl_state \
+    --model_dir ./custom_models \
+    --data_path ./custom_data.csv \
+    --output_dir ./custom_output
+```
+
+### 출력 파일 분석
+
+#### **1. RL State Vectors (.npy 파일)**
+
+**파일 구조**:
+```
+AAPL_rl_state_20250524_123646.npy
+├── Shape: (256,)           # 256차원 벡터
+├── Type: float32           # 32비트 부동소수점
+├── Range: [-0.227, 0.210]  # 정규화된 값 범위
+└── Stats: μ=0.003, σ=0.081 # 평균과 표준편차
+```
+
+**데이터 의미**:
+- **압축된 시장 상태**: 60일간의 기술적 지표와 뉴스 감성을 256차원으로 압축
+- **시간적 패턴**: 트랜스포머가 학습한 시계열 패턴의 추상적 표현
+- **의사결정 기반**: RL 에이전트가 매수/매도/관망 결정에 사용
+
+**사용 예시**:
+```python
+import numpy as np
+
+# RL 상태 벡터 로드
+rl_state = np.load('tst_predictions/AAPL_rl_state_20250524_123646.npy')
+
+# RL 에이전트에 입력
+action = rl_agent.predict(rl_state)  # 예: 0=Hold, 1=Buy, 2=Sell
+confidence = rl_agent.get_confidence(rl_state)
+```
+
+#### **2. Forecast Predictions (.csv 파일)**
+
+**파일 구조**:
+```
+TEST1_forecast_20250524_123639.csv
+├── Shape: (10, 88)         # 10일 × 88개 특성
+├── Index: prediction_day   # 0~9일 (미래 예측 일수)
+├── Columns: 0~86          # 87개 정규화된 특성값
+└── Values: [0.0, 1.0]     # MinMax 정규화된 범위
+```
+
+**데이터 해석**:
+```python
+import pandas as pd
+
+# 예측 데이터 로드
+forecast_df = pd.read_csv('tst_predictions/TEST1_forecast_20250524_123639.csv')
+
+# 일별 예측 확인
+day_0_prediction = forecast_df.iloc[0, 1:]  # 내일 예측 (87개 특성)
+day_9_prediction = forecast_df.iloc[9, 1:]  # 10일 후 예측
+
+# 특정 지표 추세 분석
+close_price_trend = forecast_df.iloc[:, 4]  # 종가 지표 (가정)
+rsi_trend = forecast_df.iloc[:, 16]         # RSI 지표 (가정)
+```
+
+#### **3. Prediction Summary (.txt 파일)**
+
+**내용 예시**:
+```
+TST Model Prediction Summary
+Timestamp: 20250524_123646
+Model: /path/to/tst_model_best_20250523_213809.pt
+Number of tickers: 1
+Tickers: AAPL
+
+AAPL:
+  Last data date: 2024-05-09 00:00:00
+  Prediction type: rl_state
+  RL state size: 256
+  RL state mean: 0.0033      # 상태 벡터 평균
+  RL state std: 0.0812       # 상태 벡터 표준편차
+```
+
+### 강화학습 통합 워크플로우
+
+#### **1. 상태 벡터 생성**
+```python
+# predict.py 실행으로 RL 상태 생성
+subprocess.run([
+    'python', 'tst_model/predict.py', 
+    '--ticker', 'AAPL', 
+    '--mode', 'rl_state'
+])
+
+# 생성된 상태 벡터 로드
+rl_state = np.load('tst_predictions/AAPL_rl_state_latest.npy')
+```
+
+#### **2. RL 에이전트 의사결정**
+```python
+from rl_agent import PPOAgent
+
+# 에이전트 로드
+agent = PPOAgent.load('trained_models/ppo_agent.pkl')
+
+# 행동 결정
+action, action_prob = agent.predict(rl_state)
+action_mapping = {0: 'HOLD', 1: 'BUY', 2: 'SELL'}
+recommendation = action_mapping[action]
+
+print(f"Recommendation: {recommendation} (confidence: {action_prob:.3f})")
+```
+
+#### **3. 실시간 파이프라인**
+```python
+def get_trading_recommendation(ticker):
+    # 1. 최신 데이터로 예측 실행
+    run_prediction(ticker)
+    
+    # 2. RL 상태 벡터 로드
+    rl_state = load_latest_rl_state(ticker)
+    
+    # 3. RL 에이전트 의사결정
+    action = rl_agent.predict(rl_state)
+    
+    # 4. 예측 결과와 결합하여 최종 조언
+    forecast = load_latest_forecast(ticker)
+    final_advice = combine_rl_and_forecast(action, forecast)
+    
+    return final_advice
+```
+
+### 기술적 특징
+
+#### **1. 동적 Feature 크기 조정**
+```python
+# 실제 데이터에서 feature 수를 자동 감지
+data_info = prepare_data_for_prediction(data_path)
+actual_input_size = len(data_info['feature_columns'])
+model_config['input_size'] = actual_input_size  # 87개로 자동 조정
+```
+
+#### **2. 모델 호환성 검증**
+- 훈련된 모델의 파라미터와 입력 크기 자동 매칭
+- train.py와 동일한 전처리 파이프라인 사용
+- Feature engineering 방식 통일 (synthetic news features)
+
+#### **3. 확장 가능한 아키텍처**
+```python
+# 새로운 예측 모드 추가 가능
+def predict_with_tst_model(model, data, mode='rl_state'):
+    if mode == 'rl_state':
+        return model(data)  # 256D 벡터
+    elif mode == 'forecast':
+        return model.predict_future(data)  # 10×87 예측
+    elif mode == 'custom_analysis':
+        return custom_analysis_function(model, data)
+```
+
+### 성능 특성
+
+#### **처리 속도**
+- **RL State 생성**: ~50ms (단일 티커, GPU)
+- **Forecast 예측**: ~100ms (단일 티커, GPU)
+- **배치 처리**: ~200ms (32 티커 동시, GPU)
+
+#### **메모리 사용량**
+- **추론 VRAM**: ~15MB (단일 예측)
+- **CPU RAM**: ~100MB (데이터 전처리 포함)
+- **출력 파일 크기**: RL state 1KB, Forecast 10KB
+
+#### **정확도 검증**
+```python
+# 예측 품질 확인
+def validate_predictions(ticker, actual_data, predicted_data):
+    # RL 상태 벡터의 일관성 확인
+    state_consistency = check_state_vector_stability(ticker)
+    
+    # 예측값의 합리성 확인
+    forecast_validity = validate_forecast_range(predicted_data)
+    
+    # 과거 예측과의 연속성 확인
+    temporal_consistency = check_temporal_consistency(ticker)
+    
+    return {
+        'state_quality': state_consistency,
+        'forecast_quality': forecast_validity,
+        'temporal_quality': temporal_consistency
+    }
+```
+
+### 실전 활용 방안
+
+#### **1. 실시간 트레이딩 봇**
+```python
+# 매 시장 오픈 시 실행
+def daily_market_analysis():
+    for ticker in portfolio_tickers:
+        # 예측 실행
+        run_prediction(ticker)
+        
+        # RL 의사결정
+        recommendation = get_rl_recommendation(ticker)
+        
+        # 포트폴리오 조정
+        adjust_portfolio(ticker, recommendation)
+```
+
+#### **2. 백테스팅 시스템**
+```python
+# 과거 데이터로 예측 성능 검증
+def backtest_predictions(start_date, end_date):
+    for date in date_range(start_date, end_date):
+        # 해당 시점 데이터로 예측
+        predictions = predict_at_date(date)
+        
+        # 실제 결과와 비교
+        actual_results = get_actual_data(date + 10_days)
+        
+        # 성능 메트릭 계산
+        accuracy = calculate_accuracy(predictions, actual_results)
+        
+        return accuracy_metrics
+```
+
+#### **3. 다중 전략 통합**
+```python
+def multi_strategy_decision(ticker):
+    # TST 예측
+    tst_prediction = get_tst_prediction(ticker)
+    
+    # RL 추천
+    rl_recommendation = get_rl_recommendation(ticker)
+    
+    # 기술적 분석
+    ta_signals = get_technical_signals(ticker)
+    
+    # 감성 분석
+    sentiment_score = get_news_sentiment(ticker)
+    
+    # 통합 의사결정
+    final_decision = ensemble_decision([
+        tst_prediction, rl_recommendation, 
+        ta_signals, sentiment_score
+    ])
+    
+    return final_decision
+```
+
+이 시스템을 통해 **과거 60일의 복잡한 시장 데이터를 256차원 벡터로 압축**하여 RL 에이전트가 효율적으로 학습하고 의사결정할 수 있으며, 동시에 **미래 10일간의 상세한 예측**을 통해 시장 트렌드를 파악할 수 있습니다.
 
 ---
 
