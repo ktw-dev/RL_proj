@@ -1,4 +1,5 @@
 # feature_engineering/ta_calculator_now.py: Calculates current technical indicators and OHLCV features for real-time inference. 
+# 05-24-2025 19:28
 
 import pandas as pd
 # We can reuse the main calculation logic from ta_calculator

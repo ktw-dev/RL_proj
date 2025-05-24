@@ -1,4 +1,5 @@
 # data_collection/ta_fetcher.py: Functions to fetch OHLCV and other technical data from yfinance, AlphaVantage, and Quandl. 
+# 05-24-2025 19:28
 
 import yfinance as yf
 from alpha_vantage.timeseries import TimeSeries

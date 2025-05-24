@@ -1,4 +1,5 @@
 # feature_engineering/ta_calculator.py: Calculates historical technical indicators and OHLCV features for TST pre-training. 
+# 05-24-2025 19:28
 
 import pandas as pd
 import pandas_ta as ta

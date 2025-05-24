@@ -1,4 +1,6 @@
 # data_collection/news_analyzer.py: Fetches news and performs sentiment analysis.
+# 05-24-2025 19:28
+
 import feedparser
 import pandas as pd
 from datetime import datetime, timedelta, timezone

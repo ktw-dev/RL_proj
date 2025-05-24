@@ -1,5 +1,6 @@
 # feature_engineering/ta_fetcher_history.py: Fetches all historical OHLCV data from listing date 
 # and calculates all technical indicators as defined in ta_calculator.py
+# 05-24-2025 19:28
 
 import yfinance as yf
 import pandas as pd
