@@ -91,6 +91,61 @@ BOM 제거: 82개
 82: 'Ticker'
 ```
 
+```
+Using found data file: /home/theta/Public/reinforcement_project-main/all_tickers_historical_features.csv
+Starting TST model training...
+Using device: cuda
+Loading historical TA data from /home/theta/Public/reinforcement_project-main/all_tickers_historical_features.csv
+Loaded TA data. Shape: (130923, 80)
+Tickers found: ['AAPL', 'AMD', 'AMZN', 'ASML', 'AVGO', 'AZN', 'COST', 'CSCO', 'GOOG', 'GOOGL', 'INTU', 'ISRG', 'LIN', 'META', 'MSFT', 'NFLX', 'NVDA', 'PLTR', 'TMUS', 'TSLA']
+Found 80 numeric TA features: ['open', 'high', 'low', 'close', 'volume']...['BOP', 'open_Z_30_1', 'high_Z_30_1', 'low_Z_30_1', 'close_Z_30_1']
+Adding synthetic neutral news sentiment features for training...
+Total features after adding news sentiment: 87 (80 TA + 7 news)
+Updated model_config input_size to: 87
+Final features shape: (130923, 87)
+Scaling features per ticker...
+Scaled AAPL: 10943 samples
+Scaled AMD: 11131 samples
+Scaled AMZN: 6791 samples
+Scaled ASML: 7340 samples
+Scaled AVGO: 3715 samples
+Scaled AZN: 7805 samples
+Scaled COST: 9536 samples
+Scaled CSCO: 8622 samples
+Scaled GOOG: 4965 samples
+Scaled GOOGL: 4965 samples
+Scaled INTU: 7847 samples
+Scaled ISRG: 6012 samples
+Scaled LIN: 8033 samples
+Scaled META: 3013 samples
+Scaled MSFT: 9617 samples
+Scaled NFLX: 5529 samples
+Scaled NVDA: 6366 samples
+Scaled PLTR: 908 samples
+Scaled TMUS: 4295 samples
+Scaled TSLA: 3490 samples
+Features scaled. Final shape: (130923, 87)
+Creating sequences for TST model...
+Created sequences from 20 tickers
+Created 129543 sequences.
+Past sequences shape: torch.Size([129543, 60, 87]), Future sequences shape: torch.Size([129543, 10, 87])
+Train loader: 3239 batches, Val loader: 810 batches
+Initializing TST model...
+Model initialized with 1,848,279 parameters
+Starting training loop...
+Early stopping patience: 15
+Minimum improvement delta: 1e-06
+Epoch 1/100, Batch 20/3239, Train Loss: 0.164203, LR: 3.09e-07
+Epoch 1/100, Batch 40/3239, Train Loss: 0.158850, LR: 6.17e-07
+Epoch 1/100, Batch 60/3239, Train Loss: 0.180978, LR: 9.26e-07
+Epoch 1/100, Batch 80/3239, Train Loss: 0.190384, LR: 1.23e-06
+Epoch 1/100, Batch 100/3239, Train Loss: 0.188278, LR: 1.54e-06
+Epoch 1/100, Batch 120/3239, Train Loss: 0.161388, LR: 1.85e-06
+Epoch 1/100, Batch 140/3239, Train Loss: 0.175591, LR: 2.16e-06
+Epoch 1/100, Batch 160/3239, Train Loss: 0.176010, LR: 2.47e-06
+...
+```
+
 ---
 ## `main.py`: Application Entry Point and Orchestrator
 
