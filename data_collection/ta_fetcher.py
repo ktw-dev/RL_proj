@@ -183,11 +183,15 @@ def fetch_quandl_data(ticker_symbol, start_date_str, end_date_str, quandl_db_cod
                 return pd.DataFrame()
         
         return data[essential_cols] # Return only standardized essential columns
-    except quandl.errors.NotFoundError:
-        print(f"Quandl dataset {dataset_code} not found. Check ticker and database code.")
-        return pd.DataFrame()
     except Exception as e:
-        print(f"Error fetching Quandl data for {dataset_code}: {e}")
+        # Handle various Quandl errors (including NotFoundError, AuthenticationError, etc.)
+        error_msg = str(e).lower()
+        if 'not found' in error_msg or '404' in error_msg:
+            print(f"Quandl dataset {dataset_code} not found. Check ticker and database code.")
+        elif 'authentication' in error_msg or 'api key' in error_msg:
+            print(f"Quandl authentication error for {dataset_code}. Check API key.")
+        else:
+            print(f"Error fetching Quandl data for {dataset_code}: {e}")
         return pd.DataFrame()
 
 # --- Main Fetching Orchestrator (Historical) ---
@@ -262,21 +266,32 @@ def fetch_recent_ohlcv_for_inference(ticker_symbol, business_days=14, lookback_p
     realistic_min_rows = int((business_days + lookback_period) * 0.7)
 
 
-    # 1. Try Alpha Vantage
-    if ALPHA_VANTAGE_API_KEY and ALPHA_VANTAGE_API_KEY != "YOUR_ALPHA_VANTAGE_API_KEY":
-        print(f"Attempting to fetch data from Alpha Vantage for {ticker_symbol}...")
-        # Alpha Vantage outputsize='full' is needed for lookback.
-        ohlcv_df = fetch_alphavantage_data(ticker_symbol, start_date_str, end_date_str, outputsize='full')
-        if not ohlcv_df.empty and len(ohlcv_df) >= realistic_min_rows:
-            source_used = "Alpha Vantage"
-            print(f"Successfully fetched sufficient data from Alpha Vantage for {ticker_symbol}.")
-        else:
-            print(f"Alpha Vantage data for {ticker_symbol} was empty or insufficient (got {len(ohlcv_df)}, need ~{realistic_min_rows}).")
-            ohlcv_df = pd.DataFrame() # Reset if insufficient
+    # 1. Try yfinance first (most reliable and free)
+    print(f"Attempting to fetch data from yfinance for {ticker_symbol}...")
+    ohlcv_df = fetch_yfinance_data(ticker_symbol, start_date_str, end_date_str)
+    if not ohlcv_df.empty and len(ohlcv_df) >= realistic_min_rows:
+        source_used = "yfinance"
+        print(f"Successfully fetched sufficient data from yfinance for {ticker_symbol}.")
     else:
-        print("Alpha Vantage API key not configured. Skipping.")
+        print(f"yfinance data for {ticker_symbol} was insufficient (got {len(ohlcv_df)}, need ~{realistic_min_rows}). Trying other sources...")
+        ohlcv_df = pd.DataFrame() # Reset if insufficient
 
-    # 2. Try Quandl if Alpha Vantage failed or insufficient
+    # 2. Try Alpha Vantage if yfinance failed (use compact for free tier)
+    if ohlcv_df.empty:
+        if ALPHA_VANTAGE_API_KEY and ALPHA_VANTAGE_API_KEY != "YOUR_ALPHA_VANTAGE_API_KEY":
+            print(f"Attempting to fetch data from Alpha Vantage for {ticker_symbol}...")
+            # Use 'compact' for free tier (last 100 data points)
+            ohlcv_df = fetch_alphavantage_data(ticker_symbol, start_date_str, end_date_str, outputsize='compact')
+            if not ohlcv_df.empty and len(ohlcv_df) >= min(realistic_min_rows, 90):  # Adjust expectation for compact
+                source_used = "Alpha Vantage"
+                print(f"Successfully fetched sufficient data from Alpha Vantage for {ticker_symbol}.")
+            else:
+                print(f"Alpha Vantage data for {ticker_symbol} was empty or insufficient (got {len(ohlcv_df)}, need ~{realistic_min_rows}).")
+                ohlcv_df = pd.DataFrame() # Reset if insufficient
+        else:
+            print("Alpha Vantage API key not configured. Skipping.")
+
+    # 3. Try Quandl if both failed (with error handling fix)
     if ohlcv_df.empty:
         if QUANDL_API_KEY and QUANDL_API_KEY != "YOUR_QUANDL_API_KEY":
             print(f"Attempting to fetch data from Quandl (EOD) for {ticker_symbol}...")
@@ -289,17 +304,6 @@ def fetch_recent_ohlcv_for_inference(ticker_symbol, business_days=14, lookback_p
                 ohlcv_df = pd.DataFrame() # Reset if insufficient
         else:
             print("Quandl API key not configured. Skipping.")
-
-    # 3. Try yfinance if Alpha Vantage and Quandl failed or insufficient
-    if ohlcv_df.empty:
-        print(f"Attempting to fetch data from yfinance for {ticker_symbol} as fallback...")
-        ohlcv_df = fetch_yfinance_data(ticker_symbol, start_date_str, end_date_str)
-        if not ohlcv_df.empty and len(ohlcv_df) >= realistic_min_rows:
-            source_used = "yfinance"
-            print(f"Successfully fetched sufficient data from yfinance for {ticker_symbol}.")
-        else:
-            print(f"yfinance data for {ticker_symbol} was also empty or insufficient (got {len(ohlcv_df)}, need ~{realistic_min_rows}).")
-            ohlcv_df = pd.DataFrame() # Reset if insufficient
             
     # Final processing if data was successfully fetched from any source
     if not ohlcv_df.empty:
