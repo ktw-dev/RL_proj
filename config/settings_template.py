@@ -1,5 +1,5 @@
-# config/settings.py: Configuration using environment variables for security
-# This file now loads sensitive data from environment variables
+# config/settings_template.py: Template for settings with environment variables
+# Copy this file to settings.py and configure your API keys
 
 import os
 from dotenv import load_dotenv
