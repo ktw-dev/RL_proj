@@ -1133,5 +1133,141 @@ pip install python-dotenv
 
 ---
 
+## 📊 데이터 수집 및 준비
+
+### 🔍 **필수 데이터 파일**
+
+이 프로젝트는 대용량 주식 데이터를 사용하므로, 데이터 파일들은 git repository에 포함되지 않습니다. 다음 방법으로 데이터를 준비하세요.
+
+#### **방법 1: 기존 데이터 파일 사용 (권장)**
+
+만약 `all_tickers_historical_features.csv` 파일을 이미 보유하고 있다면:
+
+```bash
+# 1. 파일을 프로젝트 루트 디렉토리에 복사
+cp /path/to/your/all_tickers_historical_features.csv .
+
+# 2. 파일 크기 및 구조 확인
+ls -lh all_tickers_historical_features.csv
+head -5 all_tickers_historical_features.csv
+```
+
+**예상 파일 구조**:
+```csv
+Date,open,high,low,close,volume,dividends,stock splits,SMA_10,SMA_20,...,Ticker
+1986-03-13,0.054,0.062,0.054,0.059,1031788800,0.0,0.0,0.059,...,MSFT
+1986-03-14,0.059,0.062,0.059,0.061,308160000,0.0,0.0,0.059,...,MSFT
+...
+```
+
+#### **방법 2: 데이터 수집 스크립트 실행**
+
+```bash
+# 1. 모든 지원 티커의 데이터 수집 (시간이 오래 걸림)
+python data_collection/ta_fetcher_history.py
+
+# 또는 특정 기간의 데이터만 수집 | 이 파일은 오직 
+python data_collection/ta_fetcher.py
+```
+
+#### **방법 3: 테스트용 작은 데이터셋 생성**
+
+빠른 테스트를 위해 작은 데이터셋을 생성할 수 있습니다:
+
+```bash
+# 테스트용 데이터 생성 (3개 티커, 100일)
+python create_test_data.py
+
+# 생성된 파일을 메인 데이터로 사용
+mv test_data_small.csv all_tickers_historical_features.csv
+```
+
+### 📈 **지원되는 주식 티커**
+
+현재 프로젝트에서 지원하는 주식 종목들:
+- **AAPL** (Apple Inc.)
+- **GOOGL** (Alphabet Inc.)
+- **MSFT** (Microsoft Corporation)
+- **AMZN** (Amazon.com Inc.)
+- **TSLA** (Tesla Inc.)
+- **NVDA** (NVIDIA Corporation)
+- **META** (Meta Platforms Inc.)
+- **NFLX** (Netflix Inc.)
+
+추가 티커는 `config/settings.py`의 `SUPPORTED_TICKERS` 설정에서 변경할 수 있습니다.
+
+### 🔧 **데이터 요구사항**
+
+#### **최소 요구사항**:
+- **파일명**: `all_tickers_historical_features.csv`
+- **최소 기간**: 70일 이상 (context_length: 60 + prediction_length: 10)
+- **필수 컬럼**: Date, Ticker, open, high, low, close, volume + 기술적 지표들
+
+#### **권장 사양**:
+- **데이터 기간**: 1년 이상 (더 나은 모델 훈련을 위해)
+- **파일 크기**: 100MB+ (충분한 훈련 데이터)
+- **컬럼 수**: 80+ (풍부한 기술적 지표)
+
+### ⚠️ **주의사항**
+
+#### **API 사용량 관리**:
+```bash
+# Alpha Vantage: 500 calls/day 제한
+# News API: 1000 requests/day 제한
+
+# 대용량 데이터 수집 시 시간 지연 설정
+export API_CALL_DELAY=12  # 12초 간격 (500 calls/day = 12초 간격)
+```
+
+#### **메모리 사용량**:
+```bash
+# 182MB CSV 파일 로딩 시 RAM 사용량
+# 예상 메모리: ~1-2GB (pandas 처리 + 모델 로딩)
+
+# 메모리 부족 시 배치 크기 조정
+export DEFAULT_BATCH_SIZE=16
+export DEFAULT_CONTEXT_LENGTH=30
+```
+
+#### **저장 공간**:
+```bash
+# 필요한 디스크 공간
+# - 원본 데이터: ~200MB
+# - 전처리된 데이터: ~300MB  
+# - 모델 파일들: ~15MB
+# - 예측 결과: ~10MB
+# 총 필요 공간: ~500MB
+```
+
+### 🚀 **데이터 검증**
+
+데이터가 올바르게 준비되었는지 확인:
+
+```python
+# 데이터 구조 검증
+python -c "
+import pandas as pd
+df = pd.read_csv('all_tickers_historical_features.csv')
+print(f'Shape: {df.shape}')
+print(f'Columns: {len(df.columns)}')
+print(f'Tickers: {df[\"Ticker\"].nunique()}')
+print(f'Date range: {df[\"Date\"].min()} to {df[\"Date\"].max()}')
+print(f'Missing values: {df.isnull().sum().sum()}')
+"
+```
+
+**예상 출력**:
+```
+Shape: (XX, 82)
+Columns: 82  
+Tickers: 8-20
+Date range: YYYY-MM-DD to YYYY-MM-DD
+Missing values: 0
+```
+
+데이터 준비가 완료되면 [TST 모델 훈련](tst_model/train.py) 또는 [예측 실행](tst_model/predict.py)을 진행할 수 있습니다.
+
+---
+
 
 
