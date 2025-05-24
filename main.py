@@ -1,4 +1,5 @@
 # main.py: Entry point of the stock trading application. 
+# 05-24-2025 19:25
 """
 [입력 정보]
 1. 종목 (ticker)

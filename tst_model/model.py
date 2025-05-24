@@ -1,4 +1,5 @@
 # tst_model/model.py: Defines a simple Time Series Transformer (TST) architecture using PyTorch.
+# 05-24-2025 19:25
 import torch
 import torch.nn as nn
 import math
