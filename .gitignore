@@ -137,7 +137,6 @@ secrets.json
 
 # Model files (usually large)
 *.pth
-*.pt
 *.pkl
 *.zip
 *.h5
