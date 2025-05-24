@@ -16,15 +16,15 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(PROJECT_ROOT)
 
 from tst_model.model import TSTModel
-from feature_engineering.feature_combiner import align_and_combine_features
+# from feature_engineering.feature_combiner import align_and_combine_features  # Not used in train.py approach
 
 # Configuration matching train.py
 DEFAULT_MODEL_CONFIG = {
-    'input_size': 88,  # Set by data: 81 TA + 7 News
+    'input_size': 87,  # Set by data: 80 TA + 7 News (matching train.py)
     'prediction_length': 10, # How many steps to predict into the future
     'context_length': 60,    # How many past steps to use as context
-    'n_layer': 3,            # Number of encoder/decoder layers in transformer
-    'n_head': 4,             # Number of attention heads
+    'n_layer': 4,            # Number of transformer layers (matching train.py)
+    'n_head': 8,             # Number of attention heads (matching train.py)
     'd_model': 128,          # Dimensionality of the model
     'rl_state_size': 256,    # Desired size of the RL agent's state vector
     'distribution_output': "normal", 
@@ -34,7 +34,7 @@ DEFAULT_MODEL_CONFIG = {
 
 PREDICT_CONFIG = {
     'model_dir': os.path.join(PROJECT_ROOT, 'tst_model_output'),
-    'data_path': os.path.join(PROJECT_ROOT, 'all_tickers_historical_features.csv'),
+    'data_path': os.path.join(PROJECT_ROOT, 'all_tickers_historical_features.csv'),  # Will fallback to alternatives
     'output_dir': os.path.join(PROJECT_ROOT, 'tst_predictions'),
     'batch_size': 32
 }
@@ -44,21 +44,7 @@ NEWS_FEATURE_COLS = [
     'news_count', 'weekend_effect_positive', 'weekend_effect_negative', 'weekend_effect_neutral'
 ]
 
-def create_neutral_news_df(index: pd.MultiIndex, columns: list) -> pd.DataFrame:
-    """Creates a DataFrame with neutral news sentiment for all entries in the provided index."""
-    neutral_data = {
-        'avg_sentiment_positive': 0.0,
-        'avg_sentiment_negative': 0.0,
-        'avg_sentiment_neutral': 1.0,
-        'news_count': 0,
-        'weekend_effect_positive': 0.0,
-        'weekend_effect_negative': 0.0,
-        'weekend_effect_neutral': 0.0
-    }
-    news_df = pd.DataFrame(index=index)
-    for col in columns:
-        news_df[col] = neutral_data.get(col, 0.0)
-    return news_df
+# create_neutral_news_df function removed - using train.py approach of adding features directly
 
 def load_latest_model(model_dir: str, model_config: dict, device: torch.device):
     """
@@ -100,7 +86,7 @@ def load_latest_model(model_dir: str, model_config: dict, device: torch.device):
 
 def prepare_data_for_prediction(data_path: str, target_ticker: str = None, context_length: int = 60):
     """
-    Prepare and scale data for TST model prediction.
+    Prepare and scale data for TST model prediction using train.py approach.
     
     Args:
         data_path (str): Path to the historical data CSV
@@ -112,17 +98,34 @@ def prepare_data_for_prediction(data_path: str, target_ticker: str = None, conte
     """
     print(f"Loading historical data from: {data_path}")
     
+    # Check if data file exists, try alternatives like train.py
+    if not os.path.exists(data_path):
+        alternative_paths = [
+            os.path.join(PROJECT_ROOT, 'all_tickers_historical_features.csv'),
+            os.path.join(PROJECT_ROOT, 'all_tickers_historical.csv')
+        ]
+        
+        found_file = None
+        for alt_path in alternative_paths:
+            if os.path.exists(alt_path):
+                found_file = alt_path
+                break
+        
+        if found_file:
+            print(f"Using found data file: {found_file}")
+            data_path = found_file
+        else:
+            raise FileNotFoundError(f"Data file not found: {data_path}")
+    
     # Load TA data
-    try:
-        ta_history_df = pd.read_csv(data_path)
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Data file not found: {data_path}")
+    ta_history_df = pd.read_csv(data_path)
     
     # Setup DataFrame structure (same as train.py)
     ta_history_df['Date'] = pd.to_datetime(ta_history_df['Date'])
     if not isinstance(ta_history_df.index, pd.MultiIndex):
         if 'Ticker' in ta_history_df.columns:
-            ta_history_df.set_index(['Date', 'Ticker'], inplace=True)
+            # Set Ticker first, then Date for proper grouping by ticker (same as train.py)
+            ta_history_df.set_index(['Ticker', 'Date'], inplace=True)
         else:
             raise ValueError("'Ticker' column missing in CSV for MultiIndex setup.")
     ta_history_df.sort_index(inplace=True)
@@ -133,28 +136,40 @@ def prepare_data_for_prediction(data_path: str, target_ticker: str = None, conte
             raise ValueError(f"Ticker '{target_ticker}' not found in data")
         ta_history_df = ta_history_df.xs(target_ticker, level='Ticker', drop_level=False)
     
-    print(f"Loaded data shape: {ta_history_df.shape}")
+    print(f"Loaded TA data. Shape: {ta_history_df.shape}")
+    print(f"Tickers found: {sorted(ta_history_df.index.get_level_values('Ticker').unique().tolist())}")
     
-    # Create neutral news data (same as train.py)
-    print("Creating synthetic neutral news data...")
-    neutral_news_df = create_neutral_news_df(ta_history_df.index, NEWS_FEATURE_COLS)
+    # Get only numeric columns (exclude Date and Ticker) - same as train.py
+    combined_features_df = ta_history_df.copy()
+    numeric_cols = combined_features_df.select_dtypes(include=['number']).columns.tolist()
+    print(f"Found {len(numeric_cols)} numeric TA features")
     
-    # Combine features
-    print("Combining TA and news features...")
-    combined_features_df = align_and_combine_features(
-        ta_features_df=ta_history_df,
-        news_features_df=neutral_news_df,
-        default_news_fill_value=0.0
-    )
+    # Add synthetic neutral news sentiment features for training (same as train.py)
+    print("Adding synthetic neutral news sentiment features...")
+    news_features = {
+        'avg_sentiment_positive': 0.0,
+        'avg_sentiment_negative': 0.0,
+        'avg_sentiment_neutral': 1.0,
+        'news_count': 0,
+        'weekend_effect_positive': 0.0,
+        'weekend_effect_negative': 0.0,
+        'weekend_effect_neutral': 0.0,
+    }
     
-    if combined_features_df.empty:
-        raise ValueError("Feature combination resulted in empty DataFrame")
+    # Add each news feature column with default neutral values
+    for col, default_value in news_features.items():
+        combined_features_df[col] = default_value
     
-    print(f"Combined features shape: {combined_features_df.shape}")
+    # Update feature list to include news features
+    all_feature_cols = numeric_cols + list(news_features.keys())
+    print(f"Total features after adding news sentiment: {len(all_feature_cols)} ({len(numeric_cols)} TA + 7 news)")
+    
+    # Keep only the feature columns for prediction
+    combined_features_df = combined_features_df[all_feature_cols]
+    print(f"Final features shape: {combined_features_df.shape}")
     
     # Feature scaling per ticker (same as train.py)
     print("Scaling features per ticker...")
-    feature_cols = combined_features_df.columns.tolist()
     scalers = {}
     scaled_df_list = []
     
@@ -164,22 +179,23 @@ def prepare_data_for_prediction(data_path: str, target_ticker: str = None, conte
             continue
             
         scaler = MinMaxScaler()
-        scaled_values = scaler.fit_transform(group[feature_cols])
-        scaled_df = pd.DataFrame(scaled_values, index=group.index, columns=feature_cols)
+        scaled_values = scaler.fit_transform(group[all_feature_cols])
+        scaled_df = pd.DataFrame(scaled_values, index=group.index, columns=all_feature_cols)
         
         scalers[ticker] = scaler
         scaled_df_list.append(scaled_df)
+        print(f"Scaled {ticker}: {len(group)} samples")
     
     if not scaled_df_list:
         raise ValueError("No valid ticker data after scaling")
     
     scaled_features_df = pd.concat(scaled_df_list).sort_index()
-    print(f"Scaled features shape: {scaled_features_df.shape}")
+    print(f"Features scaled. Final shape: {scaled_features_df.shape}")
     
     return {
         'scaled_data': scaled_features_df,
         'scalers': scalers,
-        'feature_columns': feature_cols,
+        'feature_columns': all_feature_cols,
         'raw_data': combined_features_df
     }
 
@@ -250,22 +266,8 @@ def predict_with_tst_model(model: TSTModel, prediction_data: dict, device: torch
                 print(f"  RL State shape: {rl_state.shape}")
                 
             elif mode == 'forecast':
-                # Enable training mode temporarily to get forecasting outputs
-                model.train()
-                outputs = model(past_values=sequence)
-                model.eval()
-                
-                # Extract prediction mean from the transformer output
-                if hasattr(outputs, 'params') and outputs.params is not None:
-                    forecast = outputs.params[0]  # Mean of the distribution
-                elif hasattr(outputs, 'prediction_outputs'):
-                    forecast = outputs.prediction_outputs
-                else:
-                    # Fallback: use generate method
-                    generated = model.transformer.generate(past_values=sequence)
-                    forecast = generated.sequences
-                    if forecast.ndim == 4:
-                        forecast = forecast.mean(dim=1)
+                # Use the model's predict_future method for forecasting
+                forecast = model.predict_future(sequence)  # Shape: (1, prediction_length, n_features)
                 
                 predictions[ticker] = {
                     'forecast': forecast.cpu().numpy().squeeze(),  # Shape: (prediction_length, n_features)
@@ -360,20 +362,26 @@ def main():
     print(f"Using device: {device}")
     
     try:
-        # Load model
-        model, model_path = load_latest_model(args.model_dir, DEFAULT_MODEL_CONFIG, device)
-        
-        # Prepare data
+        # Prepare data first to determine actual feature count
         data_info = prepare_data_for_prediction(
             args.data_path, 
             target_ticker=args.ticker,
             context_length=DEFAULT_MODEL_CONFIG['context_length']
         )
         
+        # Update model config with actual input size (like train.py)
+        model_config = DEFAULT_MODEL_CONFIG.copy()
+        actual_input_size = len(data_info['feature_columns'])
+        model_config['input_size'] = actual_input_size
+        print(f"Updated model_config input_size to: {model_config['input_size']} (from data)")
+        
+        # Load model with updated config
+        model, model_path = load_latest_model(args.model_dir, model_config, device)
+        
         # Create prediction sequences
         prediction_data = create_prediction_sequences(
             data_info['scaled_data'],
-            DEFAULT_MODEL_CONFIG['context_length']
+            model_config['context_length']
         )
         
         if not prediction_data:
