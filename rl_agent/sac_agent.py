@@ -51,6 +51,26 @@ class SACAgent:
         self.portfolio_dim = 3
         self.total_state_dim = state_dim
         
+        # Learning rate scheduling parameters
+        self.initial_lr = lr
+        self.current_lr = lr
+        self.min_lr = lr * 0.01  # 최소 학습률 (더 낮게)
+        self.max_lr = lr * 30    # 최대 학습률 (더 높게, SAC는 PPO보다 보수적)
+        self.lr_decay_factor = 0.8   # 20% 감소 (더 적극적)
+        self.lr_increase_factor = 1.3  # 30% 증가 (더 적극적)
+        
+        # Loss history for adaptive scheduling
+        self.policy_loss_history = []
+        self.value_loss_history = []
+        self.q_loss_history = []
+        self.loss_ratio_history = []
+        
+        # Dynamic loss weighting for SAC
+        self.initial_value_weight = 1.0
+        self.current_value_weight = 1.0
+        self.min_value_weight = 0.5
+        self.max_value_weight = 3.0
+        
         # Policy Network (Actor)
         self.policy_net = nn.Sequential(
             nn.Linear(state_dim, 128),
@@ -224,12 +244,29 @@ class SACAgent:
         for target_param, param in zip(self.target_value_net.parameters(), self.value_net.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
+        # Calculate average Q loss for adaptive scheduling
+        q_loss_avg = (q1_loss.item() + q2_loss.item()) / 2
+        
+        # Adaptive learning rate and loss weight adjustment
+        lr_changed, lr_reason, loss_ratio = self._adjust_learning_rate(
+            policy_loss.item(), value_loss.item(), q_loss_avg
+        )
+        current_weight = self._adjust_loss_weights(
+            policy_loss.item(), value_loss.item(), q_loss_avg
+        )
+
         return {
             'total_loss': (q1_loss + q2_loss + value_loss + policy_loss).item(),
             'policy_loss': policy_loss.item(),
             'value_loss': value_loss.item(),
             'q1_loss': q1_loss.item(),
-            'q2_loss': q2_loss.item()
+            'q2_loss': q2_loss.item(),
+            'q_loss_avg': q_loss_avg,
+            'current_lr': self.current_lr,
+            'value_weight': current_weight,
+            'loss_ratio': loss_ratio,
+            'lr_changed': lr_changed,
+            'lr_reason': lr_reason
         }
 
     def update_policy(self, transitions):
@@ -247,3 +284,88 @@ class SACAgent:
             "reason": "SAC policy output",
             "target_price": state_vector.get("current_price", 0)
         }
+
+    def _adjust_learning_rate(self, policy_loss, value_loss, q_loss_avg):
+        """
+        Adaptively adjust learning rate based on loss patterns for SAC.
+        """
+        # Calculate combined loss ratio (use absolute value for policy loss since SAC can be negative)
+        total_critic_loss = value_loss + q_loss_avg
+        abs_policy_loss = abs(policy_loss)  # SAC policy loss can be negative
+        
+        if abs_policy_loss > 1e-8:
+            loss_ratio = total_critic_loss / abs_policy_loss
+        else:
+            loss_ratio = 1000.0
+        
+        self.loss_ratio_history.append(loss_ratio)
+        self.policy_loss_history.append(policy_loss)
+        self.value_loss_history.append(value_loss)
+        self.q_loss_history.append(q_loss_avg)
+        
+        # Keep only recent history (last 5 updates for faster response)
+        if len(self.loss_ratio_history) > 5:
+            self.loss_ratio_history.pop(0)
+            self.policy_loss_history.pop(0)
+            self.value_loss_history.pop(0)
+            self.q_loss_history.pop(0)
+        
+        # Adaptive learning rate adjustment (start after just 2 updates)
+        if len(self.loss_ratio_history) >= 2:
+            recent_ratio = self.loss_ratio_history[-1]  # Use latest ratio for faster response
+            
+            # SAC-specific adjustment logic with more realistic thresholds
+            if recent_ratio > 50:  # Critic losses >> Policy loss (severe imbalance)
+                new_lr = min(self.current_lr * self.lr_increase_factor, self.max_lr)
+                adjustment_reason = f"Critic losses too high (ratio: {recent_ratio:.1f})"
+            elif recent_ratio > 10:  # Moderate imbalance
+                new_lr = min(self.current_lr * 1.15, self.max_lr)
+                adjustment_reason = f"Critic losses high (ratio: {recent_ratio:.1f})"
+            elif recent_ratio < 0.2:  # Policy loss >> Critic losses
+                new_lr = max(self.current_lr * self.lr_decay_factor, self.min_lr)
+                adjustment_reason = f"Policy converging too fast (ratio: {recent_ratio:.1f})"
+            elif recent_ratio < 1:  # Policy slightly higher
+                new_lr = max(self.current_lr * 0.9, self.min_lr)
+                adjustment_reason = f"Policy ahead (ratio: {recent_ratio:.1f})"
+            elif 3 <= recent_ratio <= 10:  # Good balance for SAC
+                new_lr = min(self.current_lr * 1.03, self.max_lr)  # Very gradual increase
+                adjustment_reason = f"Balanced learning (ratio: {recent_ratio:.1f})"
+            else:
+                new_lr = self.current_lr
+                adjustment_reason = f"No change (ratio: {recent_ratio:.1f})"
+            
+            # Update learning rate with lower threshold (2% instead of 3%)
+            if abs(new_lr - self.current_lr) / self.current_lr > 0.02:  # 2% threshold
+                old_lr = self.current_lr
+                self.current_lr = new_lr
+                # Update all optimizers
+                for optimizer in [self.policy_optimizer, self.q1_optimizer, self.q2_optimizer, self.value_optimizer]:
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = self.current_lr
+                print(f"    📈 LR: {old_lr:.2e} → {self.current_lr:.2e} ({adjustment_reason})")
+                return True, adjustment_reason, recent_ratio
+        
+        return False, "Insufficient history", loss_ratio if len(self.loss_ratio_history) > 0 else 0.0
+
+    def _adjust_loss_weights(self, policy_loss, value_loss, q_loss_avg):
+        """
+        Dynamically adjust the weight of value loss in SAC (less aggressive than PPO).
+        """
+        total_critic_loss = value_loss + q_loss_avg
+        abs_policy_loss = abs(policy_loss)  # SAC policy loss can be negative
+        
+        if abs_policy_loss > 1e-8:
+            loss_ratio = total_critic_loss / abs_policy_loss
+            
+            # SAC uses more conservative weight adjustment
+            if loss_ratio > 50:
+                self.current_value_weight = min(self.current_value_weight * 1.05, self.max_value_weight)
+            elif loss_ratio < 0.2:
+                self.current_value_weight = max(self.current_value_weight * 0.95, self.min_value_weight)
+            else:
+                # Gradual adjustment towards target
+                target_weight = max(0.8, min(2.0, loss_ratio / 15))
+                self.current_value_weight = 0.95 * self.current_value_weight + 0.05 * target_weight
+                self.current_value_weight = max(self.min_value_weight, min(self.max_value_weight, self.current_value_weight))
+        
+        return self.current_value_weight

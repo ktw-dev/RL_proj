@@ -12,6 +12,25 @@ class PPOAgent:
         self.portfolio_dim = 3
         self.total_state_dim = state_dim
         
+        # Learning rate scheduling parameters
+        self.initial_lr = lr
+        self.current_lr = lr
+        self.min_lr = lr * 0.01  # 최소 학습률 (더 낮게)
+        self.max_lr = lr * 100    # 최대 학습률 (더 높게)
+        self.lr_decay_factor = 0.8   # 20% 감소 (더 적극적)
+        self.lr_increase_factor = 1.5  # 50% 증가 (더 적극적)
+        
+        # Loss history for adaptive scheduling
+        self.policy_loss_history = []
+        self.value_loss_history = []
+        self.loss_ratio_history = []
+        
+        # Dynamic loss weighting
+        self.initial_value_weight = 0.5
+        self.current_value_weight = 0.5
+        self.min_value_weight = 0.1
+        self.max_value_weight = 2.0
+        
         # 정책 네트워크 - 포트폴리오 정보 포함
         self.policy = nn.Sequential(
             nn.Linear(state_dim, 128),
@@ -131,8 +150,12 @@ class PPOAgent:
         value_estimates = self.value_net(states).squeeze()
         value_loss = nn.functional.mse_loss(value_estimates, returns)
 
-        # 총 loss: 정책 + 가치 (value loss 가중치 증가)
-        total_loss = policy_loss + 0.5 * value_loss
+        # Adaptive learning rate and loss weight adjustment
+        lr_changed, lr_reason, loss_ratio = self._adjust_learning_rate(policy_loss.item(), value_loss.item())
+        current_weight = self._adjust_loss_weights(policy_loss.item(), value_loss.item())
+
+        # 총 loss: 정책 + 가치 (동적 가중치 적용)
+        total_loss = policy_loss + current_weight * value_loss
 
         self.optimizer.zero_grad()
         total_loss.backward()
@@ -154,7 +177,12 @@ class PPOAgent:
             'policy_loss': policy_loss.item(),
             'value_loss': value_loss.item(),
             'mean_advantage': advantages.mean().item() if len(advantages) > 1 else 0.0,
-            'mean_return': returns.mean().item() if len(returns) > 1 else 0.0
+            'mean_return': returns.mean().item() if len(returns) > 1 else 0.0,
+            'current_lr': self.current_lr,
+            'value_weight': current_weight,
+            'loss_ratio': loss_ratio,
+            'lr_changed': lr_changed,
+            'lr_reason': lr_reason
         }
 
     def predict_action(self, state_vector):
@@ -164,4 +192,80 @@ class PPOAgent:
             "reason": "PPO policy output",
             "target_price": state_vector.get("current_price", 0)
         }
+
+    def _adjust_learning_rate(self, policy_loss, value_loss):
+        """
+        Adaptively adjust learning rate based on loss patterns.
+        """
+        # Calculate loss ratio (value_loss / policy_loss)
+        if policy_loss > 1e-8:  # Avoid division by zero
+            loss_ratio = value_loss / policy_loss
+        else:
+            loss_ratio = 1000.0  # Very high ratio if policy loss is very small
+        
+        self.loss_ratio_history.append(loss_ratio)
+        self.policy_loss_history.append(policy_loss)
+        self.value_loss_history.append(value_loss)
+        
+        # Keep only recent history (last 5 updates for faster response)
+        if len(self.loss_ratio_history) > 5:
+            self.loss_ratio_history.pop(0)
+            self.policy_loss_history.pop(0)
+            self.value_loss_history.pop(0)
+        
+        # Adaptive learning rate adjustment (start after just 2 updates)
+        if len(self.loss_ratio_history) >= 2:
+            recent_ratio = self.loss_ratio_history[-1]  # Use latest ratio for faster response
+            
+            # More realistic thresholds based on actual training patterns
+            if recent_ratio > 100:  # Value loss >> Policy loss (severe imbalance)
+                new_lr = min(self.current_lr * self.lr_increase_factor, self.max_lr)
+                adjustment_reason = f"Value loss too high (ratio: {recent_ratio:.1f})"
+            elif recent_ratio > 20:  # Moderate imbalance
+                new_lr = min(self.current_lr * 1.2, self.max_lr)
+                adjustment_reason = f"Value loss high (ratio: {recent_ratio:.1f})"
+            elif recent_ratio < 0.1:  # Policy loss >> Value loss
+                new_lr = max(self.current_lr * self.lr_decay_factor, self.min_lr)
+                adjustment_reason = f"Policy converging too fast (ratio: {recent_ratio:.1f})"
+            elif recent_ratio < 1:  # Policy slightly higher
+                new_lr = max(self.current_lr * 0.9, self.min_lr)
+                adjustment_reason = f"Policy ahead (ratio: {recent_ratio:.1f})"
+            elif 5 <= recent_ratio <= 20:  # Good balance
+                new_lr = min(self.current_lr * 1.05, self.max_lr)
+                adjustment_reason = f"Balanced learning (ratio: {recent_ratio:.1f})"
+            else:
+                new_lr = self.current_lr
+                adjustment_reason = f"No change (ratio: {recent_ratio:.1f})"
+            
+            # Update learning rate with lower threshold (2% instead of 5%)
+            if abs(new_lr - self.current_lr) / self.current_lr > 0.02:  # 2% threshold
+                old_lr = self.current_lr
+                self.current_lr = new_lr
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = self.current_lr
+                print(f"    📈 LR: {old_lr:.2e} → {self.current_lr:.2e} ({adjustment_reason})")
+                return True, adjustment_reason, recent_ratio
+        
+        return False, "Insufficient history", loss_ratio if len(self.loss_ratio_history) > 0 else 0.0
+
+    def _adjust_loss_weights(self, policy_loss, value_loss):
+        """
+        Dynamically adjust the weight of value loss in total loss.
+        """
+        if policy_loss > 1e-8:
+            loss_ratio = value_loss / policy_loss
+            
+            # If value loss is much higher, increase its weight
+            if loss_ratio > 100:
+                self.current_value_weight = min(self.current_value_weight * 1.1, self.max_value_weight)
+            # If policy loss is higher, decrease value weight
+            elif loss_ratio < 0.1:
+                self.current_value_weight = max(self.current_value_weight * 0.9, self.min_value_weight)
+            # Gradual adjustment towards balanced learning
+            else:
+                target_weight = max(0.5, min(2.0, loss_ratio / 10))
+                self.current_value_weight = 0.9 * self.current_value_weight + 0.1 * target_weight
+                self.current_value_weight = max(self.min_value_weight, min(self.max_value_weight, self.current_value_weight))
+        
+        return self.current_value_weight
 

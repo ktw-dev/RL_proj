@@ -181,9 +181,36 @@ def train_rl_agent(agent_type, rl_states, rewards, epochs=10, gamma=0.99, use_ga
             total_loss = loss_info['total_loss']
             policy_loss = loss_info['policy_loss']
             value_loss = loss_info['value_loss']
+            current_lr = loss_info.get('current_lr', 'N/A')
+            value_weight = loss_info.get('value_weight', 'N/A')
+            loss_ratio = loss_info.get('loss_ratio', 'N/A')
+            lr_changed = loss_info.get('lr_changed', False)
+            lr_reason = loss_info.get('lr_reason', '')
             
-            print(f"Epoch {epoch + 1}/{epochs} | Total Loss: {total_loss:.4f} | "
-                  f"Policy: {policy_loss:.4f} | Value: {value_loss:.4f}{gpu_memory_info}")
+            # Base loss information
+            loss_str = f"Epoch {epoch + 1}/{epochs} | Total: {total_loss:.4f} | Policy: {policy_loss:.4f} | Value: {value_loss:.4f}"
+            
+            # Add SAC-specific Q losses if available
+            if 'q_loss_avg' in loss_info:
+                q_loss_avg = loss_info['q_loss_avg']
+                loss_str += f" | Q-Avg: {q_loss_avg:.4f}"
+            
+            # Add adaptive parameters
+            if current_lr != 'N/A':
+                loss_str += f" | LR: {current_lr:.2e}"
+            if value_weight != 'N/A':
+                loss_str += f" | VW: {value_weight:.2f}"
+            if loss_ratio != 'N/A':
+                loss_str += f" | Ratio: {loss_ratio:.1f}"
+            
+            # Add GPU info
+            loss_str += gpu_memory_info
+            
+            print(loss_str)
+            
+            # Show learning rate changes
+            if lr_changed:
+                print(f"    🔄 LR adjusted: {lr_reason} (Ratio: {loss_ratio:.1f})")
             
             # # Early stopping check for potential overfitting
             # if policy_loss < 0.01 and value_loss > 0.5:
