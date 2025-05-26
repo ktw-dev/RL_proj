@@ -574,9 +574,15 @@ def train_rl_agent_with_tst(
             epoch_agent_filename = f"{agent_base_filename}_epoch_{epoch+1}.pt"
             epoch_agent_path = os.path.join(run_output_dir, epoch_agent_filename)
             
+            # Determine fallback config based on agent type
+            if agent_type == "PPO":
+                fallback_config = agent.policy.state_dict()
+            else: # SAC
+                fallback_config = agent.policy_net.state_dict()
+                
             save_data_epoch = {
                 'epoch': epoch + 1,
-                'config': agent.config if hasattr(agent, 'config') else agent.policy.state_dict() # Fallback for older agents
+                'config': agent.config if hasattr(agent, 'config') else fallback_config
             }
             if agent_type == "PPO":
                 save_data_epoch.update({
@@ -881,9 +887,15 @@ def train_rl_agent_multi_ticker(
             epoch_agent_filename = f"{agent_base_filename}_epoch_{epoch+1}.pt"
             epoch_agent_path = os.path.join(run_output_dir, epoch_agent_filename)
             
+            # Determine fallback config based on agent type
+            if agent_type == "PPO":
+                fallback_config = agent.policy.state_dict()
+            else: # SAC
+                fallback_config = agent.policy_net.state_dict()
+                
             save_data_epoch = {
                 'epoch': epoch + 1,
-                'config': agent.config if hasattr(agent, 'config') else agent.policy.state_dict()
+                'config': agent.config if hasattr(agent, 'config') else fallback_config
             }
             if agent_type == "PPO":
                 save_data_epoch.update({
