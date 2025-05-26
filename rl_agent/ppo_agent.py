@@ -131,8 +131,8 @@ class PPOAgent:
         value_estimates = self.value_net(states).squeeze()
         value_loss = nn.functional.mse_loss(value_estimates, returns)
 
-        # 총 loss: 정책 + 가치 (value loss 가중치 감소)
-        total_loss = policy_loss + 0.1 * value_loss
+        # 총 loss: 정책 + 가치 (value loss 가중치 증가)
+        total_loss = policy_loss + 0.5 * value_loss
 
         self.optimizer.zero_grad()
         total_loss.backward()

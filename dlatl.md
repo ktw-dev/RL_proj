@@ -192,3 +192,149 @@ pip install python-dotenv
 - [ ] 프로젝트 실행 테스트 완료
 
 이 설정을 완료하면 API 키를 안전하게 관리하면서 프로젝트를 git repository에 공유할 수 있습니다.
+
+'''
+/train.py --max_samples 129723 --epochs 100
+Traceback (most recent call last):
+  File "/home/theta/Public/reinforcement_project-main/rl_agent/train.py", line 3, in <module>
+    import torch
+ModuleNotFoundError: No module named 'torch'
+theta@theta-14700k-4080:~/Public/reinforcement_project-main$ conda activate rl_project
+(rl_project) theta@theta-14700k-4080:~/Public/reinforcement_project-main$ python3 rl_agent/train.py --max_samples 129723 --epochs 100
+=== TST-RL Training Workflow ===
+Agent type: PPO
+Training mode: Multi-ticker
+🚀 GPU Available: 1 device(s)
+   Current GPU: NVIDIA GeForce RTX 4080
+   GPU Memory: 15.7 GB
+   CUDA Version: 12.6
+Max tickers: 20
+Min samples per ticker: 100
+TST model directory: /home/theta/Public/reinforcement_project-main/tst_model_output
+Data path: /home/theta/Public/reinforcement_project-main/all_tickers_historical_features.csv
+Training epochs: 100
+Output directory: /home/theta/Public/reinforcement_project-main/rl_model_output
+=== Training PPO Agent on Multiple Tickers ===
+=== Generating RL States from TST Model ===
+Target ticker: All tickers
+Model directory: /home/theta/Public/reinforcement_project-main/tst_model_output
+Data path: /home/theta/Public/reinforcement_project-main/all_tickers_historical_features.csv
+Device: cuda
+Loading historical data from: /home/theta/Public/reinforcement_project-main/all_tickers_historical_features.csv
+Loaded TA data. Shape: (130923, 80)
+Tickers found: ['AAPL', 'AMD', 'AMZN', 'ASML', 'AVGO', 'AZN', 'COST', 'CSCO', 'GOOG', 'GOOGL', 'INTU', 'ISRG', 'LIN', 'META', 'MSFT', 'NFLX', 'NVDA', 'PLTR', 'TMUS', 'TSLA']
+Found 80 numeric TA features
+Adding synthetic neutral news sentiment features...
+Total features after adding news sentiment: 87 (80 TA + 7 news)
+Final features shape: (130923, 87)
+Scaling features per ticker...
+Scaled AAPL: 10943 samples
+Scaled AMD: 11131 samples
+Scaled AMZN: 6791 samples
+Scaled ASML: 7340 samples
+Scaled AVGO: 3715 samples
+Scaled AZN: 7805 samples
+Scaled COST: 9536 samples
+Scaled CSCO: 8622 samples
+Scaled GOOG: 4965 samples
+Scaled GOOGL: 4965 samples
+Scaled INTU: 7847 samples
+Scaled ISRG: 6012 samples
+Scaled LIN: 8033 samples
+Scaled META: 3013 samples
+Scaled MSFT: 9617 samples
+Scaled NFLX: 5529 samples
+Scaled NVDA: 6366 samples
+Scaled PLTR: 908 samples
+Scaled TMUS: 4295 samples
+Scaled TSLA: 3490 samples
+Features scaled. Final shape: (130923, 87)
+Loading model from: /home/theta/Public/reinforcement_project-main/tst_model_output/tst_model_best_20250524_191519.pt
+Model loaded successfully. Parameters: 1,848,279
+Loaded TST model: /home/theta/Public/reinforcement_project-main/tst_model_output/tst_model_best_20250524_191519.pt
+Using close prices for AAPL
+Generated 10883 RL states for AAPL
+Using close prices for AMD
+Generated 11071 RL states for AMD
+Using close prices for AMZN
+Generated 6731 RL states for AMZN
+Using close prices for ASML
+Generated 7280 RL states for ASML
+Using close prices for AVGO
+Generated 3655 RL states for AVGO
+Using close prices for AZN
+Generated 7745 RL states for AZN
+Using close prices for COST
+Generated 9476 RL states for COST
+Using close prices for CSCO
+Generated 8562 RL states for CSCO
+Using close prices for GOOG
+Generated 4905 RL states for GOOG
+Using close prices for GOOGL
+Generated 4905 RL states for GOOGL
+Using close prices for INTU
+Generated 7787 RL states for INTU
+Using close prices for ISRG
+Generated 5952 RL states for ISRG
+Using close prices for LIN
+Generated 7973 RL states for LIN
+Using close prices for META
+Generated 2953 RL states for META
+Using close prices for MSFT
+Generated 9557 RL states for MSFT
+Using close prices for NFLX
+Generated 5469 RL states for NFLX
+Using close prices for NVDA
+Generated 6306 RL states for NVDA
+Using close prices for PLTR
+Generated 848 RL states for PLTR
+Using close prices for TMUS
+Generated 4235 RL states for TMUS
+Using close prices for TSLA
+Generated 3430 RL states for TSLA
+Selected 20 tickers for training: ['AAPL', 'AMD', 'AMZN', 'ASML', 'AVGO', 'AZN', 'COST', 'CSCO', 'GOOG', 'GOOGL', 'INTU', 'ISRG', 'LIN', 'META', 'MSFT', 'NFLX', 'NVDA', 'PLTR', 'TMUS', 'TSLA']
+  AAPL: 10883 samples, price range: $0.04-$196.67, mean: $20.60
+  AMD: 11071 samples, price range: $1.62-$211.38, mean: $19.51
+  AMZN: 6731 samples, price range: $0.10-$189.50, mean: $36.46
+  ASML: 7280 samples, price range: $2.01-$1037.87, mean: $126.46
+  AVGO: 3655 samples, price range: $1.03-$138.41, mean: $23.69
+  AZN: 7745 samples, price range: $1.61-$76.05, mean: $19.75
+  COST: 9476 samples, price range: $4.04-$780.30, mean: $95.37
+  CSCO: 8562 samples, price range: $0.05-$57.49, mean: $18.20
+  GOOG: 4905 samples, price range: $4.09-$172.87, mean: $44.07
+  GOOGL: 4905 samples, price range: $4.11-$171.13, mean: $44.13
+  INTU: 7787 samples, price range: $1.94-$679.06, mean: $102.67
+  ISRG: 5952 samples, price range: $0.74-$400.59, mean: $87.90
+  LIN: 7973 samples, price range: $4.19-$468.99, mean: $86.73
+  META: 2953 samples, price range: $17.65-$525.42, mean: $168.70
+  MSFT: 9557 samples, price range: $0.06-$425.34, mean: $50.55
+  NFLX: 5469 samples, price range: $0.37-$691.69, mean: $141.11
+  NVDA: 6306 samples, price range: $0.03-$94.97, mean: $5.27
+  PLTR: 848 samples, price range: $6.00-$39.00, mean: $16.48
+  TMUS: 4235 samples, price range: $8.96-$165.09, mean: $59.35
+  TSLA: 3430 samples, price range: $1.30-$409.97, mean: $74.74
+
+Combined training data:
+  Total samples: 129723
+  RL state shape: (129723, 256)
+  Price range: $0.03 - $1037.87
+  Price mean: $59.05
+  Data shuffled for better training
+
+Starting PPO training...
+Using device for RL training: cuda
+Training RL agent on device: cuda
+Using all 129723 samples for training
+PPO networks moved to cuda
+Epoch 1/100 | Total Loss: 0.0790 | Policy: 0.0114 | Value: 0.6751 | GPU: 0.33GB used, 1.21GB cached
+Epoch 2/100 | Total Loss: 0.1014 | Policy: 0.0022 | Value: 0.9920 | GPU: 0.33GB used, 1.47GB cached
+Epoch 3/100 | Total Loss: 0.0984 | Policy: 0.0044 | Value: 0.9395 | GPU: 0.33GB used, 1.47GB cached
+Epoch 4/100 | Total Loss: 0.0932 | Policy: 0.0069 | Value: 0.8634 | GPU: 0.33GB used, 1.47GB cached
+Epoch 5/100 | Total Loss: 0.1003 | Policy: 0.0002 | Value: 1.0006 | GPU: 0.33GB used, 1.47GB cached
+Epoch 6/100 | Total Loss: 0.1026 | Policy: 0.0040 | Value: 0.9862 | GPU: 0.33GB used, 1.47GB cached
+Epoch 7/100 | Total Loss: 0.1005 | Policy: 0.0005 | Value: 0.9997 | GPU: 0.33GB used, 1.47GB cached
+Epoch 8/100 | Total Loss: 0.0991 | Policy: 0.0022 | Value: 0.9691 | GPU: 0.33GB used, 1.47GB cached
+Epoch 9/100 | Total Loss: 0.1004 | Policy: 0.0057 | Value: 0.9477 | GPU: 0.33GB used, 1.47GB cached
+...
+
+```

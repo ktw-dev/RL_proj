@@ -179,8 +179,17 @@ def train_rl_agent(agent_type, rl_states, rewards, epochs=10, gamma=0.99, use_ga
         # Handle both old (float) and new (dict) loss formats
         if isinstance(loss_info, dict):
             total_loss = loss_info['total_loss']
+            policy_loss = loss_info['policy_loss']
+            value_loss = loss_info['value_loss']
+            
             print(f"Epoch {epoch + 1}/{epochs} | Total Loss: {total_loss:.4f} | "
-                  f"Policy: {loss_info['policy_loss']:.4f} | Value: {loss_info['value_loss']:.4f}{gpu_memory_info}")
+                  f"Policy: {policy_loss:.4f} | Value: {value_loss:.4f}{gpu_memory_info}")
+            
+            # # Early stopping check for potential overfitting
+            # if policy_loss < 0.01 and value_loss > 0.5:
+            #     print(f"⚠️  Warning: Policy converged too quickly (Policy: {policy_loss:.4f}, Value: {value_loss:.4f})")
+            #     print("   Consider reducing learning rate or increasing value loss weight")
+                
         else:
             print(f"Epoch {epoch + 1}/{epochs} | Loss: {loss_info:.4f}{gpu_memory_info}")
 
