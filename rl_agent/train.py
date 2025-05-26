@@ -1093,6 +1093,10 @@ def main():
         print(f"Error during training: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print("🧹 GPU memory cleared in finally block (e.g., after interrupt or error).")
 
 if __name__ == '__main__':
     main()
