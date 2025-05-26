@@ -17,3 +17,4 @@ print(f"숫자형: {len(numeric_cols)}개")
 print("전체 컬럼:")
 for i, col in enumerate(df.columns):
     print(f"{i+1:2d}: '{col}'")
+    
