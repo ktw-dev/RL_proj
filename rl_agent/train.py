@@ -212,11 +212,6 @@ def train_rl_agent(agent_type, rl_states, rewards, epochs=10, gamma=0.99, use_ga
             if lr_changed:
                 print(f"    🔄 LR adjusted: {lr_reason} (Ratio: {loss_ratio:.1f})")
             
-            # # Early stopping check for potential overfitting
-            # if policy_loss < 0.01 and value_loss > 0.5:
-            #     print(f"⚠️  Warning: Policy converged too quickly (Policy: {policy_loss:.4f}, Value: {value_loss:.4f})")
-            #     print("   Consider reducing learning rate or increasing value loss weight")
-                
         else:
             print(f"Epoch {epoch + 1}/{epochs} | Loss: {loss_info:.4f}{gpu_memory_info}")
 
@@ -455,69 +450,180 @@ def train_rl_agent_with_tst(
     print(f"RL state shape: {final_rl_states.shape}")
     print(f"Price range: ${final_prices.min():.2f} - ${final_prices.max():.2f}")
     
-    # Train agent using existing function
-    print(f"\nStarting {agent_type} training...")
+    # Initialize early stopping parameters
+    best_value_loss = float('inf')
+    epochs_without_improvement = 0
+    patience = 10  # Stop after 10 epochs without improvement in value loss
     
-    # Setup device for training
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device for RL training: {device}")
-    
-    agent = train_rl_agent(
-        agent_type=agent_type,
-        rl_states=final_rl_states,
-        rewards=final_prices,
-        epochs=epochs,
-        gamma=gamma,
-        use_gae=use_gae,
-        lam=lam,
-        max_samples=max_samples,  # Use configurable max_samples parameter
-        device=device  # Pass device to training function
-    )
-    
-    # Save trained agent
+    # Create directory for epoch-wise model saving
     if save_agent:
         if output_dir is None:
             output_dir = os.path.join(PROJECT_ROOT, 'rl_model_output')
         os.makedirs(output_dir, exist_ok=True)
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        agent_filename = f"{agent_type.lower()}_agent_{training_label}_{timestamp}.pt"
-        agent_path = os.path.join(output_dir, agent_filename)
+        timestamp_base = datetime.now().strftime('%Y%m%d_%H%M%S')
+        agent_base_filename = f"{agent_type.lower()}_agent_{training_label}"
         
-        # Save agent state dict with training metadata
-        save_data = {
-            'config': {
-                'state_dim': 256,
-                'action_dim': 3,
-                'agent_type': agent_type,
-                'training_tickers': selected_tickers,
-                'multi_ticker': multi_ticker,
-                'total_samples': total_samples,
-                'epochs': epochs,
-                'gamma': gamma
-            }
+        # Directory for this specific training run
+        run_output_dir = os.path.join(output_dir, f"{agent_base_filename}_{timestamp_base}")
+        os.makedirs(run_output_dir, exist_ok=True)
+        print(f"Saving epoch models to: {run_output_dir}")
+    
+    # Training loop (moved from train_rl_agent)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Starting {agent_type} training on {device}")
+
+    if agent_type == "PPO":
+        agent.policy = agent.policy.to(device)
+        agent.old_policy = agent.old_policy.to(device)
+        agent.value_net = agent.value_net.to(device)
+    else:  # SAC
+        agent.policy_net = agent.policy_net.to(device)
+        agent.q_net1 = agent.q_net1.to(device)
+        agent.q_net2 = agent.q_net2.to(device)
+        agent.value_net = agent.value_net.to(device)
+        agent.target_value_net = agent.target_value_net.to(device)
+    
+    print(f"{agent_type} networks moved to {device}")
+    
+    env = TSTEnv(final_rl_states, final_prices)
+
+    for epoch in range(epochs):
+        state = env.reset()
+        done = False
+        epoch_losses = []
+
+        batch_states = []
+        batch_actions = []
+        batch_rewards = []
+        batch_log_probs = []
+        batch_values = []
+
+        while not done:
+            if agent_type == "PPO":
+                action, log_prob = agent.select_action(state)
+                value = agent.evaluate_value(state)
+            else:  # SAC
+                action, log_prob = agent.select_action(state)
+                value = agent.evaluate_value(state)
+
+            next_state, reward, done, _ = env.step(action)
+
+            batch_states.append(state["rl_state"])
+            batch_actions.append(action)
+            batch_rewards.append(reward)
+            batch_log_probs.append(log_prob)
+            batch_values.append(value)
+            state = next_state
+
+        values_np = [v.item() if isinstance(v, torch.Tensor) else v for v in batch_values]
+        if use_gae:
+            advantages = compute_gae(batch_rewards, values_np, gamma=gamma, lam=lam)
+            returns = [a + v for a, v in zip(advantages, values_np)]
+        else:
+            returns = compute_returns(batch_rewards, gamma=gamma)
+            advantages = [r - v for r, v in zip(returns, values_np)]
+
+        dummy_portfolio = np.array([1.0, 0.0, 0.0])
+        batch_states_259 = np.array([np.concatenate([s, dummy_portfolio]) for s in batch_states])
+        
+        transitions = {
+            'states': torch.FloatTensor(batch_states_259).to(device),
+            'actions': torch.LongTensor(batch_actions).to(device),
+            'log_probs': torch.stack(batch_log_probs).to(device),
+            'returns': torch.FloatTensor(returns).to(device),
+            'advantages': torch.FloatTensor(advantages).to(device),
+            'next_states': torch.FloatTensor(np.concatenate([batch_states_259[1:], [batch_states_259[-1]]])).to(device),
+            'dones': torch.FloatTensor([0.0] * (len(batch_rewards) - 1) + [1.0]).to(device)
         }
+
+        loss_info = agent.update_policy(transitions)
+        epoch_losses.append(loss_info)
         
-        if agent_type == "PPO":
-            save_data.update({
-                'policy_state_dict': agent.policy.state_dict(),
-                'old_policy_state_dict': agent.old_policy.state_dict(),
-                'value_net_state_dict': agent.value_net.state_dict(),
-                'optimizer_state_dict': agent.optimizer.state_dict(),
-                'config': {**save_data['config'], 'lr': 1e-4, 'eps_clip': 0.2}
-            })
-        else:  # SAC
-            save_data.update({
-                'policy_net_state_dict': agent.policy_net.state_dict(),
-                'q_net1_state_dict': agent.q_net1.state_dict(),
-                'q_net2_state_dict': agent.q_net2.state_dict(),
-                'value_net_state_dict': agent.value_net.state_dict(),
-                'target_value_net_state_dict': agent.target_value_net.state_dict(),
-                'config': {**save_data['config'], 'lr': 3e-4}
-            })
+        # --- Output and Saving --- 
+        if device.type == 'cuda':
+            gpu_memory_used = torch.cuda.memory_allocated(device) / 1024**3
+            gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**3
+            gpu_memory_info = f" | GPU: {gpu_memory_used:.2f}GB used, {gpu_memory_cached:.2f}GB cached"
+        else:
+            gpu_memory_info = ""
+
+        total_loss_val = loss_info['total_loss']
+        policy_loss_val = loss_info['policy_loss']
+        value_loss_val = loss_info['value_loss']
+        current_lr_val = loss_info.get('current_lr', 'N/A')
+        value_weight_val = loss_info.get('value_weight', 'N/A')
+        loss_ratio_val = loss_info.get('loss_ratio', 'N/A')
+        lr_changed_val = loss_info.get('lr_changed', False)
+        lr_reason_val = loss_info.get('lr_reason', '')
         
-        torch.save(save_data, agent_path)
-        print(f"Agent saved: {agent_path}")
+        loss_str = f"Epoch {epoch + 1}/{epochs} | Total: {total_loss_val:.4f} | Policy: {policy_loss_val:.4f} | Value: {value_loss_val:.4f}"
+        if 'q_loss_avg' in loss_info:
+            loss_str += f" | Q-Avg: {loss_info['q_loss_avg']:.4f}"
+        if current_lr_val != 'N/A': loss_str += f" | LR: {current_lr_val:.2e}"
+        if value_weight_val != 'N/A': loss_str += f" | VW: {value_weight_val:.2f}"
+        if loss_ratio_val != 'N/A': loss_str += f" | Ratio: {loss_ratio_val:.1f}"
+        loss_str += gpu_memory_info
+        print(loss_str)
+
+        if lr_changed_val:
+            print(f"    🔄 LR adjusted: {lr_reason_val} (Ratio: {loss_ratio_val:.1f})")
+
+        # --- Epoch-wise Model Saving --- 
+        if save_agent:
+            epoch_agent_filename = f"{agent_base_filename}_epoch_{epoch+1}.pt"
+            epoch_agent_path = os.path.join(run_output_dir, epoch_agent_filename)
+            
+            save_data_epoch = {
+                'epoch': epoch + 1,
+                'config': agent.config if hasattr(agent, 'config') else agent.policy.state_dict() # Fallback for older agents
+            }
+            if agent_type == "PPO":
+                save_data_epoch.update({
+                    'policy_state_dict': agent.policy.state_dict(),
+                    'value_net_state_dict': agent.value_net.state_dict()
+                })
+            else: # SAC
+                save_data_epoch.update({
+                    'policy_net_state_dict': agent.policy_net.state_dict(),
+                    'q_net1_state_dict': agent.q_net1.state_dict(),
+                    'q_net2_state_dict': agent.q_net2.state_dict(),
+                    'value_net_state_dict': agent.value_net.state_dict(),
+                    'target_value_net_state_dict': agent.target_value_net.state_dict()
+                })
+            torch.save(save_data_epoch, epoch_agent_path)
+            # print(f"    💾 Saved epoch model: {epoch_agent_path}")
+
+        # --- Early Stopping Logic --- 
+        current_value_loss = value_loss_val
+        if current_value_loss < best_value_loss:
+            best_value_loss = current_value_loss
+            epochs_without_improvement = 0
+            if save_agent:
+                best_agent_filename = f"{agent_base_filename}_best_model.pt"
+                best_agent_path = os.path.join(run_output_dir, best_agent_filename)
+                torch.save(save_data_epoch, best_agent_path) # Save current best model
+                print(f"    🏆 New best model saved (Value Loss: {best_value_loss:.4f})")
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= patience:
+            print(f"🛑 Early stopping after {epoch + 1} epochs: Value loss did not improve for {patience} epochs.")
+            break
+            
+        # Policy-based early stopping (if policy is too stable and value is not improving)
+        if agent_type == "PPO" and abs(policy_loss_val) < 0.001 and current_value_loss > 0.1 and epoch > 20:
+            print(f"🛑 Early stopping: PPO Policy likely overfitted (Policy: {policy_loss_val:.4f}, Value: {current_value_loss:.4f})")
+            break
+        if agent_type == "SAC" and abs(policy_loss_val) < 0.05 and current_value_loss > 0.1 and epoch > 20:
+            print(f"🛑 Early stopping: SAC Policy likely overfitted (Policy: {policy_loss_val:.4f}, Value: {current_value_loss:.4f})")
+            break
+
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+        print(f"GPU memory cleared after training.")
+    
+    print(f"{agent_type} training process completed.")
     
     return {
         'agent': agent,
@@ -526,7 +632,7 @@ def train_rl_agent_with_tst(
         'multi_ticker': multi_ticker,
         'training_data_size': total_samples,
         'rl_states_data': rl_states_data,
-        'agent_path': agent_path if save_agent else None,
+        'agent_path': None if not save_agent else os.path.join(run_output_dir, f"{agent_base_filename}_best_model.pt"),
         'ticker_info': ticker_info if multi_ticker else None
     }
 
@@ -650,71 +756,180 @@ def train_rl_agent_multi_ticker(
     final_prices = final_prices[indices]
     print(f"  Data shuffled for better training")
     
-    # Train agent using existing function
-    print(f"\nStarting {agent_type} training...")
+    # Initialize agent (moved here to avoid re-initialization)
+    agent = PPOAgent(state_dim=259) if agent_type == "PPO" else SACAgent(state_dim=259)
     
-    # Setup device for training
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device for RL training: {device}")
+    # --- Training Loop moved to here from train_rl_agent_with_tst --- 
+    # Initialize early stopping parameters
+    best_value_loss = float('inf')
+    epochs_without_improvement = 0
+    patience = 15  # More patience for multi-ticker training
     
-    agent = train_rl_agent(
-        agent_type=agent_type,
-        rl_states=final_rl_states,
-        rewards=final_prices,
-        epochs=epochs,
-        gamma=gamma,
-        use_gae=use_gae,
-        lam=lam,
-        max_samples=max_samples,  # Use configurable max_samples parameter
-        device=device  # Pass device to training function
-    )
-    
-    # Save trained agent
-    agent_path = None
+    # Create directory for epoch-wise model saving
+    agent_path = None # Initialize agent_path
     if save_agent:
         if output_dir is None:
             output_dir = os.path.join(PROJECT_ROOT, 'rl_model_output')
         os.makedirs(output_dir, exist_ok=True)
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        agent_filename = f"{agent_type.lower()}_agent_multi_{len(selected_tickers)}tickers_{timestamp}.pt"
-        agent_path = os.path.join(output_dir, agent_filename)
+        timestamp_base = datetime.now().strftime('%Y%m%d_%H%M%S')
+        agent_base_filename = f"{agent_type.lower()}_agent_multi_{len(selected_tickers)}tickers"
         
-        # Save agent with comprehensive metadata
-        save_data = {
-            'config': {
-                'state_dim': 256,
-                'action_dim': 3,
-                'agent_type': agent_type,
-                'training_tickers': selected_tickers,
-                'total_samples': total_samples,
-                'epochs': epochs,
-                'gamma': gamma,
-                'multi_ticker': True,
-                'ticker_info': ticker_info
-            }
+        run_output_dir = os.path.join(output_dir, f"{agent_base_filename}_{timestamp_base}")
+        os.makedirs(run_output_dir, exist_ok=True)
+        print(f"Saving epoch models to: {run_output_dir}")
+        agent_path = os.path.join(run_output_dir, f"{agent_base_filename}_best_model.pt") # For return value
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"\nStarting {agent_type} multi-ticker training on {device}")
+
+    if agent_type == "PPO":
+        agent.policy = agent.policy.to(device)
+        agent.old_policy = agent.old_policy.to(device)
+        agent.value_net = agent.value_net.to(device)
+    else:  # SAC
+        agent.policy_net = agent.policy_net.to(device)
+        agent.q_net1 = agent.q_net1.to(device)
+        agent.q_net2 = agent.q_net2.to(device)
+        agent.value_net = agent.value_net.to(device)
+        agent.target_value_net = agent.target_value_net.to(device)
+    print(f"{agent_type} networks moved to {device}")
+    
+    env = TSTEnv(final_rl_states, final_prices)
+
+    for epoch in range(epochs):
+        state = env.reset()
+        done = False
+
+        batch_states = []
+        batch_actions = []
+        batch_rewards = []
+        batch_log_probs = []
+        batch_values = []
+
+        while not done:
+            if agent_type == "PPO":
+                action, log_prob = agent.select_action(state)
+                value = agent.evaluate_value(state)
+            else:  # SAC
+                action, log_prob = agent.select_action(state)
+                value = agent.evaluate_value(state)
+
+            next_state, reward, done, _ = env.step(action)
+
+            batch_states.append(state["rl_state"])
+            batch_actions.append(action)
+            batch_rewards.append(reward)
+            batch_log_probs.append(log_prob)
+            batch_values.append(value)
+            state = next_state
+
+        values_np = [v.item() if isinstance(v, torch.Tensor) else v for v in batch_values]
+        if use_gae:
+            advantages = compute_gae(batch_rewards, values_np, gamma=gamma, lam=lam)
+            returns = [a + v for a, v in zip(advantages, values_np)]
+        else:
+            returns = compute_returns(batch_rewards, gamma=gamma)
+            advantages = [r - v for r, v in zip(returns, values_np)]
+
+        dummy_portfolio = np.array([1.0, 0.0, 0.0])
+        batch_states_259 = np.array([np.concatenate([s, dummy_portfolio]) for s in batch_states])
+        
+        transitions = {
+            'states': torch.FloatTensor(batch_states_259).to(device),
+            'actions': torch.LongTensor(batch_actions).to(device),
+            'log_probs': torch.stack(batch_log_probs).to(device),
+            'returns': torch.FloatTensor(returns).to(device),
+            'advantages': torch.FloatTensor(advantages).to(device),
+            'next_states': torch.FloatTensor(np.concatenate([batch_states_259[1:], [batch_states_259[-1]]])).to(device),
+            'dones': torch.FloatTensor([0.0] * (len(batch_rewards) - 1) + [1.0]).to(device)
         }
+
+        loss_info = agent.update_policy(transitions)
         
-        if agent_type == "PPO":
-            save_data.update({
-                'policy_state_dict': agent.policy.state_dict(),
-                'old_policy_state_dict': agent.old_policy.state_dict(),
-                'value_net_state_dict': agent.value_net.state_dict(),
-                'optimizer_state_dict': agent.optimizer.state_dict(),
-            })
-            save_data['config'].update({'lr': 1e-4, 'eps_clip': 0.2})
-        else:  # SAC
-            save_data.update({
-                'policy_net_state_dict': agent.policy_net.state_dict(),
-                'q_net1_state_dict': agent.q_net1.state_dict(),
-                'q_net2_state_dict': agent.q_net2.state_dict(),
-                'value_net_state_dict': agent.value_net.state_dict(),
-                'target_value_net_state_dict': agent.target_value_net.state_dict(),
-            })
-            save_data['config'].update({'lr': 3e-4})
+        # --- Output and Saving --- 
+        if device.type == 'cuda':
+            gpu_memory_used = torch.cuda.memory_allocated(device) / 1024**3
+            gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**3
+            gpu_memory_info = f" | GPU: {gpu_memory_used:.2f}GB used, {gpu_memory_cached:.2f}GB cached"
+        else:
+            gpu_memory_info = ""
+
+        total_loss_val = loss_info['total_loss']
+        policy_loss_val = loss_info['policy_loss']
+        value_loss_val = loss_info['value_loss']
+        current_lr_val = loss_info.get('current_lr', 'N/A')
+        value_weight_val = loss_info.get('value_weight', 'N/A')
+        loss_ratio_val = loss_info.get('loss_ratio', 'N/A')
+        lr_changed_val = loss_info.get('lr_changed', False)
+        lr_reason_val = loss_info.get('lr_reason', '')
         
-        torch.save(save_data, agent_path)
-        print(f"Multi-ticker agent saved: {agent_path}")
+        loss_str = f"Epoch {epoch + 1}/{epochs} | Total: {total_loss_val:.4f} | Policy: {policy_loss_val:.4f} | Value: {value_loss_val:.4f}"
+        if 'q_loss_avg' in loss_info:
+            loss_str += f" | Q-Avg: {loss_info['q_loss_avg']:.4f}"
+        if current_lr_val != 'N/A': loss_str += f" | LR: {current_lr_val:.2e}"
+        if value_weight_val != 'N/A': loss_str += f" | VW: {value_weight_val:.2f}"
+        if loss_ratio_val != 'N/A': loss_str += f" | Ratio: {loss_ratio_val:.1f}"
+        loss_str += gpu_memory_info
+        print(loss_str)
+
+        if lr_changed_val:
+            print(f"    🔄 LR adjusted: {lr_reason_val} (Ratio: {loss_ratio_val:.1f})")
+
+        # --- Epoch-wise Model Saving --- 
+        if save_agent:
+            epoch_agent_filename = f"{agent_base_filename}_epoch_{epoch+1}.pt"
+            epoch_agent_path = os.path.join(run_output_dir, epoch_agent_filename)
+            
+            save_data_epoch = {
+                'epoch': epoch + 1,
+                'config': agent.config if hasattr(agent, 'config') else agent.policy.state_dict()
+            }
+            if agent_type == "PPO":
+                save_data_epoch.update({
+                    'policy_state_dict': agent.policy.state_dict(),
+                    'value_net_state_dict': agent.value_net.state_dict()
+                })
+            else: # SAC
+                save_data_epoch.update({
+                    'policy_net_state_dict': agent.policy_net.state_dict(),
+                    'q_net1_state_dict': agent.q_net1.state_dict(),
+                    'q_net2_state_dict': agent.q_net2.state_dict(),
+                    'value_net_state_dict': agent.value_net.state_dict(),
+                    'target_value_net_state_dict': agent.target_value_net.state_dict()
+                })
+            torch.save(save_data_epoch, epoch_agent_path)
+            # print(f"    💾 Saved epoch model: {epoch_agent_path}")
+
+        # --- Early Stopping Logic --- 
+        current_value_loss = value_loss_val
+        if current_value_loss < best_value_loss:
+            best_value_loss = current_value_loss
+            epochs_without_improvement = 0
+            if save_agent:
+                best_agent_filename = f"{agent_base_filename}_best_model.pt"
+                # Path for best model is now agent_path, defined earlier
+                torch.save(save_data_epoch, agent_path) 
+                print(f"    🏆 New best model saved (Value Loss: {best_value_loss:.4f})")
+        else:
+            epochs_without_improvement += 1
+
+        if epochs_without_improvement >= patience:
+            print(f"🛑 Early stopping after {epoch + 1} epochs: Value loss did not improve for {patience} epochs.")
+            break
+            
+        if agent_type == "PPO" and abs(policy_loss_val) < 0.001 and current_value_loss > 0.1 and epoch > 30: # More epochs for multi-ticker
+            print(f"🛑 Early stopping: PPO Policy overfitted (Policy: {policy_loss_val:.4f}, Value: {current_value_loss:.4f})")
+            break
+        if agent_type == "SAC" and abs(policy_loss_val) < 0.05 and current_value_loss > 0.1 and epoch > 30:
+            print(f"🛑 Early stopping: SAC Policy overfitted (Policy: {policy_loss_val:.4f}, Value: {current_value_loss:.4f})")
+            break
+
+    if device.type == 'cuda':
+        torch.cuda.empty_cache()
+        print(f"GPU memory cleared after training.")
+    
+    print(f"{agent_type} multi-ticker training process completed.")
     
     return {
         'agent': agent,
@@ -732,7 +947,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Train RL Agent with TST-generated states')
-    parser.add_argument('--agent_type', type=str, choices=['PPO', 'SAC'], default='PPO',
+    parser.add_argument('--agent_type', type=str, choices=['PPO', 'SAC'],
                        help='Type of RL agent to train')
     parser.add_argument('--ticker', type=str, help='Target ticker symbol (e.g., AAPL)')
     parser.add_argument('--model_dir', type=str, 
