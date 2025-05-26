@@ -7,7 +7,7 @@
   2-1. 보유 중인 경우: 보유 수량(num_of_share), 평단가(avg_price)
 3. 현재 사용 가능한 투자 금액 (bullet)
 4. 사용자가 원하는 액션 (매수: 1, 매도: 0) 및 해당 의사의 강도(가중치)
-5. 선택할 에이전트: PPO(‘bob’) 또는 SAC(‘sara’)
+5. 선택할 에이전트: PPO('bob') 또는 SAC('sara')
 
 [내부 처리 과정]
 1. 입력 정보를 기반으로 ticker, num_of_share, bullet, action_intention 등 핵심 상태 변수 정리
@@ -51,6 +51,8 @@ from feature_engineering.ta_calculator_now import calculate_current_technical_in
 from feature_engineering.ta_calculator import calculate_technical_indicators
 from tst_model.model import TSTModel
 from config.tickers import SUPPORTED_TICKERS
+from rl_agent.ppo_agent import PPOAgent
+from rl_agent.sac_agent import SACAgent
 import torch
 import torch.nn as nn
 import numpy as np
@@ -672,7 +674,11 @@ def construct_rl_state_vector(current_state_vars: dict, technical_data: pd.DataF
         "num_shares": current_state_vars["holdings_info"]["num_shares"],
         "avg_purchase_price": current_state_vars["holdings_info"]["avg_price"],
         "available_cash": current_state_vars["available_cash"],
-        "user_action_preference": current_state_vars["user_intention"]
+        "user_action_preference": current_state_vars["user_intention"],
+        # RL 에이전트가 기대하는 형태로 추가 매핑
+        "cash": current_state_vars["available_cash"],  # bullet -> cash
+        "shares": current_state_vars["holdings_info"]["num_shares"],  # num_shares -> shares
+        "price": current_price  # current_price의 별칭
     }
     
     print(f"RL State Vector constructed:")
@@ -681,6 +687,7 @@ def construct_rl_state_vector(current_state_vars: dict, technical_data: pd.DataF
     print(f"  TST RL State: {type(tst_rl_state)} shape={tst_rl_state.shape if tst_rl_state is not None else None}")
     print(f"  TST Direction: {tst_prediction.get('predicted_direction')}")
     print(f"  TST Confidence: {tst_prediction.get('confidence'):.3f}")
+    print(f"  Portfolio Info: Cash=${state_vector['cash']:.2f}, Shares={state_vector['shares']}, Avg Price=${state_vector['avg_purchase_price']:.2f}")
     
     return state_vector
 
@@ -692,12 +699,12 @@ def get_action_from_rl_agent(state_vector: dict, agent_choice: str):
     print(f"\n--- 7. Getting Action from RL Agent ({agent_choice}) ---")
     agent = None
     if agent_choice == "PPO":
-        agent = MockPPOAgent()
+        agent = PPOAgent()
     elif agent_choice == "SAC":
-        agent = MockSACAgent()
+        agent = SACAgent()
     else:
         print(f"Warning: Unknown agent choice '{agent_choice}'. Defaulting to PPO.")
-        agent = MockPPOAgent() 
+        agent = PPOAgent() 
         # Or raise an error: raise ValueError("Invalid agent choice")
 
     if not state_vector.get("current_price"):
