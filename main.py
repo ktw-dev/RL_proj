@@ -75,53 +75,54 @@ DEFAULT_MODEL_CONFIG = {
 # --- Constants for Data Fetching/Processing ---
 TA_LOOKBACK_PERIOD = 60  # Days of historical data needed for TA calculation (e.g., for 50-day SMA)
 TST_MODEL_DIR = os.path.join(project_root, 'tst_model_output')
+RL_MODEL_DIR = os.path.join(project_root, 'rl_model_output') # New constant for RL models
 
 # --- Mock Agent Classes (to be replaced with real implementations later) ---
-class MockPPOAgent:
-    def predict_action(self, state_vector: dict):
-        print(f"[Mock PPO] Analyzing state: price={state_vector.get('current_price')}, sentiment={state_vector.get('market_sentiment_score'):.3f}")
-        # Simple mock logic based on sentiment and price trend
-        sentiment = state_vector.get('market_sentiment_score', 0.0)
-        tst_direction = state_vector.get('tst_predicted_direction', 'UNKNOWN')
-        current_price = state_vector.get('current_price', 0)
+# class MockPPOAgent:
+#     def predict_action(self, state_vector: dict):
+#         print(f"[Mock PPO] Analyzing state: price={state_vector.get('current_price')}, sentiment={state_vector.get('market_sentiment_score'):.3f}")
+#         # Simple mock logic based on sentiment and price trend
+#         sentiment = state_vector.get('market_sentiment_score', 0.0)
+#         tst_direction = state_vector.get('tst_predicted_direction', 'UNKNOWN')
+#         current_price = state_vector.get('current_price', 0)
         
-        if tst_direction == "UP" and sentiment > 0.1:
-            action = "BUY"
-            reason = "Positive TST prediction and sentiment"
-            target_price = current_price * 1.02 if current_price else None
-        elif tst_direction == "DOWN" or sentiment < -0.1:
-            action = "SELL"
-            reason = "Negative TST prediction or sentiment"
-            target_price = current_price * 0.98 if current_price else None
-        else:
-            action = "HOLD"
-            reason = "Uncertain market conditions"
-            target_price = current_price
+#         if tst_direction == "UP" and sentiment > 0.1:
+#             action = "BUY"
+#             reason = "Positive TST prediction and sentiment"
+#             target_price = current_price * 1.02 if current_price else None
+#         elif tst_direction == "DOWN" or sentiment < -0.1:
+#             action = "SELL"
+#             reason = "Negative TST prediction or sentiment"
+#             target_price = current_price * 0.98 if current_price else None
+#         else:
+#             action = "HOLD"
+#             reason = "Uncertain market conditions"
+#             target_price = current_price
             
-        return {"action": action, "reason": reason, "target_price": target_price}
+#         return {"action": action, "reason": reason, "target_price": target_price}
 
-class MockSACAgent:
-    def predict_action(self, state_vector: dict):
-        print(f"[Mock SAC] Analyzing state: price={state_vector.get('current_price')}, sentiment={state_vector.get('market_sentiment_score'):.3f}")
-        # Mock SAC with slightly different logic
-        sentiment = state_vector.get('market_sentiment_score', 0.0)
-        confidence = state_vector.get('tst_confidence', 0.0)
-        current_price = state_vector.get('current_price', 0)
+# class MockSACAgent:
+#     def predict_action(self, state_vector: dict):
+#         print(f"[Mock SAC] Analyzing state: price={state_vector.get('current_price')}, sentiment={state_vector.get('market_sentiment_score'):.3f}")
+#         # Mock SAC with slightly different logic
+#         sentiment = state_vector.get('market_sentiment_score', 0.0)
+#         confidence = state_vector.get('tst_confidence', 0.0)
+#         current_price = state_vector.get('current_price', 0)
         
-        if confidence > 0.7 and sentiment > 0.05:
-            action = "BUY"
-            reason = "High confidence TST prediction with positive sentiment"
-            target_price = current_price * 1.015 if current_price else None
-        elif confidence > 0.7 and sentiment < -0.05:
-            action = "SELL" 
-            reason = "High confidence TST prediction with negative sentiment"
-            target_price = current_price * 0.985 if current_price else None
-        else:
-            action = "HOLD"
-            reason = "Low confidence or neutral sentiment"
-            target_price = current_price
+#         if confidence > 0.7 and sentiment > 0.05:
+#             action = "BUY"
+#             reason = "High confidence TST prediction with positive sentiment"
+#             target_price = current_price * 1.015 if current_price else None
+#         elif confidence > 0.7 and sentiment < -0.05:
+#             action = "SELL" 
+#             reason = "High confidence TST prediction with negative sentiment"
+#             target_price = current_price * 0.985 if current_price else None
+#         else:
+#             action = "HOLD"
+#             reason = "Low confidence or neutral sentiment"
+#             target_price = current_price
             
-        return {"action": action, "reason": reason, "target_price": target_price}
+#         return {"action": action, "reason": reason, "target_price": target_price}
 
 # --- Helper Function Definitions --- 
 
@@ -389,7 +390,7 @@ def merge_ta_and_news_data(ta_df: pd.DataFrame, news_df: pd.DataFrame, ticker: s
     
     # 87개 특성 확인
     numeric_cols = merged_df.select_dtypes(include=['number']).columns.tolist()
-    print(f"Numeric features: {len(numeric_cols)} (target: 87)")
+    # print(f"Numeric features: {len(numeric_cols)} (target: 87)") # Reduced verbosity
     
     return merged_df
 
@@ -411,6 +412,77 @@ def load_latest_tst_model(model_dir: str, model_config: dict, device: torch.devi
     
     print(f"TST Model loaded successfully. Parameters: {sum(p.numel() for p in model.parameters()):,}")
     return model, latest_model_path
+
+def load_latest_rl_agent(agent_type: str, model_base_dir: str, device: torch.device, state_dim: int = 259):
+    """Loads the latest trained RL agent (PPO or SAC)."""
+    print(f"--- Loading latest RL agent: {agent_type} ---")
+    agent_name_pattern = f"{agent_type.lower()}_agent_*"
+    search_pattern = os.path.join(model_base_dir, agent_name_pattern)
+    
+    run_dirs = [d for d in glob.glob(search_pattern) if os.path.isdir(d)]
+    if not run_dirs:
+        print(f"Warning: No training run directories found for {agent_type} in {model_base_dir}")
+        return None
+        
+    latest_run_dir = max(run_dirs, key=os.path.getmtime)
+    print(f"Found latest run directory: {latest_run_dir}")
+    
+    best_model_pattern = os.path.join(latest_run_dir, f"{agent_type.lower()}_agent_*_best_model.pt")
+    model_files = glob.glob(best_model_pattern)
+    
+    if not model_files:
+        print(f"Warning: No best model file found in {latest_run_dir} matching pattern {best_model_pattern}")
+        return None
+    
+    latest_model_path = model_files[0] # Should ideally be only one best model
+    print(f"Loading RL model from: {latest_model_path}")
+    
+    try:
+        if agent_type == "PPO":
+            agent = PPOAgent(state_dim=state_dim)
+            checkpoint = torch.load(latest_model_path, map_location=device)
+            agent.actor.load_state_dict(checkpoint['actor_state_dict'])
+            agent.critic.load_state_dict(checkpoint['critic_state_dict'])
+            # Ensure actor_old is also initialized if needed for some PPO versions, though not strictly for predict_action
+            agent.actor_old.load_state_dict(agent.actor.state_dict())
+            agent.actor.to(device)
+            agent.critic.to(device)
+            agent.actor_old.to(device)
+            agent.actor.eval()
+            agent.critic.eval()
+            agent.actor_old.eval()
+        elif agent_type == "SAC":
+            agent = SACAgent(state_dim=state_dim)
+            checkpoint = torch.load(latest_model_path, map_location=device)
+            agent.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
+            agent.q_net1.load_state_dict(checkpoint['q_net1_state_dict'])
+            agent.q_net2.load_state_dict(checkpoint['q_net2_state_dict'])
+            # Value net and target value net might not always be in 'best_model' if only actor/critic were saved for simplicity
+            if 'value_net_state_dict' in checkpoint:
+                agent.value_net.load_state_dict(checkpoint['value_net_state_dict'])
+            if 'target_value_net_state_dict' in checkpoint:
+                agent.target_value_net.load_state_dict(checkpoint['target_value_net_state_dict'])
+            agent.policy_net.to(device)
+            agent.q_net1.to(device)
+            agent.q_net2.to(device)
+            agent.value_net.to(device)
+            agent.target_value_net.to(device)
+            agent.policy_net.eval()
+            agent.q_net1.eval()
+            agent.q_net2.eval()
+            agent.value_net.eval()
+            agent.target_value_net.eval()
+        else:
+            raise ValueError(f"Unsupported agent type: {agent_type}")
+            
+        print(f"{agent_type} agent loaded successfully from {latest_model_path}")
+        return agent
+        
+    except Exception as e:
+        print(f"Error loading RL agent {agent_type} from {latest_model_path}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: pd.Series, ticker: str):
     """Predicts future price movement using the TST model.
@@ -697,23 +769,35 @@ def get_action_from_rl_agent(state_vector: dict, agent_choice: str):
     Returns: A dictionary with the agent's action and reasoning.
     """
     print(f"\n--- 7. Getting Action from RL Agent ({agent_choice}) ---")
-    agent = None
-    if agent_choice == "PPO":
-        agent = PPOAgent()
-    elif agent_choice == "SAC":
-        agent = SACAgent()
-    else:
-        print(f"Warning: Unknown agent choice '{agent_choice}'. Defaulting to PPO.")
-        agent = PPOAgent() 
-        # Or raise an error: raise ValueError("Invalid agent choice")
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    state_dim = 259 # 256 for TST state + 3 for portfolio info (cash_ratio, stock_ratio, portfolio_value_normalized)
+    
+    agent = load_latest_rl_agent(agent_choice, RL_MODEL_DIR, device, state_dim)
+
+    if agent is None:
+        print(f"Could not load agent {agent_choice}. Defaulting to HOLD.")
+        return {"action": "HOLD", "reason": f"Failed to load {agent_choice} agent."}
 
     if not state_vector.get("current_price"):
          print("Skipping RL action due to missing current price in state vector.")
-         return {"action": "HOLD", "reason": "Insufficient data for RL decision"}
+         return {"action": "HOLD", "reason": "Insufficient data for RL decision (missing price)"}
+    
+    if state_vector.get("tst_rl_state") is None:
+        print("Skipping RL action due to missing TST RL state in state vector.")
+        return {"action": "HOLD", "reason": "Insufficient data for RL decision (missing TST state)"}
 
-    rl_action_decision = agent.predict_action(state_vector)
-    print(f"RL Agent Decision: {rl_action_decision}")
-    return rl_action_decision
+
+    try:
+        # The agent's predict_action should handle the state_vector directly
+        rl_action_decision = agent.predict_action(state_vector)
+        print(f"RL Agent ({agent_choice}) Decision: {rl_action_decision}")
+        return rl_action_decision
+    except Exception as e:
+        print(f"Error during RL agent prediction ({agent_choice}): {e}")
+        import traceback
+        traceback.print_exc()
+        return {"action": "HOLD", "reason": f"Error during {agent_choice} prediction: {e}"}
 
 def generate_final_recommendation(tst_prediction: dict, rl_decision: dict, ticker: str):
     """Generates the final trading recommendation for the user.
@@ -759,11 +843,45 @@ def generate_final_recommendation(tst_prediction: dict, rl_decision: dict, ticke
         recommendation += f"   RL State: Mean={tst_prediction.get('rl_state_mean', 0):.4f}, Std={tst_prediction.get('rl_state_std', 0):.4f}\n"
     
     recommendation += f"\n🎯 **RL Agent Decision**\n"
-    recommendation += f"   Action: {rl_decision.get('action', 'N/A')}\n"
+    rl_action = rl_decision.get('action', 'N/A')
+    recommendation += f"   Action: {rl_action}\n"
     recommendation += f"   Reasoning: {rl_decision.get('reason', 'N/A')}\n"
-    
-    if rl_decision.get('target_price') is not None:
-        recommendation += f"   Target Price: ${rl_decision['target_price']:.2f}\n"
+
+    actual_current_price = rl_decision.get('target_price') # This is the current price at the time of RL decision
+    suggested_price_text = ""
+
+    if actual_current_price is not None:
+        if rl_action == "BUY":
+            price_change_rate = tst_prediction.get('price_change_rate', 0)
+            tst_direction = tst_prediction.get('predicted_direction')
+            tst_confidence = tst_prediction.get('confidence', 0)
+            
+            if tst_direction == "UP" and tst_confidence >= 0.6:
+                suggested_price_text = f"현재가(${actual_current_price:.2f}) 또는 약간 낮은 가격에서 분할 매수를 고려해볼 수 있습니다."
+            elif tst_direction == "UP" and tst_confidence >= 0.4:
+                 suggested_price_text = f"현재가(${actual_current_price:.2f}) 근처에서 매수를 고려하되, TST 예측 신뢰도가 중간 수준임을 참고하세요."
+            else:
+                suggested_price_text = f"현재 시장가(약 ${actual_current_price:.2f})에 매수를 고려해볼 수 있습니다. TST 예측 신뢰도가 낮거나 방향성이 다를 수 있습니다."
+            recommendation += f"   제안 진입 전략: {suggested_price_text}\n"
+
+        elif rl_action == "SELL":
+            price_change_rate = tst_prediction.get('price_change_rate', 0)
+            tst_direction = tst_prediction.get('predicted_direction')
+            tst_confidence = tst_prediction.get('confidence', 0)
+
+            if tst_direction == "DOWN" and tst_confidence >= 0.6:
+                suggested_price_text = f"현재가(${actual_current_price:.2f}) 또는 약간 높은 가격에서 신속한 매도를 고려하세요."
+            elif tst_direction == "DOWN" and tst_confidence >= 0.4:
+                suggested_price_text = f"현재가(${actual_current_price:.2f}) 근처에서 매도를 고려하되, TST 예측 신뢰도가 중간 수준임을 참고하세요."
+            elif tst_direction == "UP" and price_change_rate > 0.03 and tst_confidence > 0.3: # TST expects decent rise with some confidence
+                 upside_target_low = actual_current_price * (1 + price_change_rate * 0.3) # Capture a smaller portion
+                 upside_target_high = actual_current_price * (1 + price_change_rate * 0.6) # Capture a larger portion
+                 suggested_price_text = (f"TST 모델은 단기 상승(${price_change_rate*100:+.1f}%)을 예상합니다. "
+                                       f"잠재적 상승분을 일부 고려하여 현재가(${actual_current_price:.2f})보다 높은 지정가 매도(예: ${upside_target_low:.2f} ~ ${upside_target_high:.2f})를 고려하거나, "
+                                       f"즉각적인 위험 관리를 원하시면 시장가(${actual_current_price:.2f}) 매도를 고려하세요.")
+            else: # Default sell at current market, or TST has low confidence / conflicting signals
+                suggested_price_text = f"현재 시장가(약 ${actual_current_price:.2f})에 매도를 고려하세요. TST 예측과 RL 에이전트 결정이 다를 수 있습니다."
+            recommendation += f"   제안 청산 전략: {suggested_price_text}\n"
     
     # 종합 조언
     recommendation += f"\n💡 **Investment Advice**\n"

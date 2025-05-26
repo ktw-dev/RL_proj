@@ -72,157 +72,6 @@ def compute_returns(rewards, gamma=0.99):
         returns.insert(0, R)
     return returns
 
-def train_rl_agent(agent_type, rl_states, rewards, epochs=10, gamma=0.99, use_gae=True, lam=0.95, max_samples=20000, device=None):
-    # Setup device
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training RL agent on device: {device}")
-    
-    # Limit training data size to prevent memory issues and gradient explosion
-    if len(rl_states) > max_samples:
-        indices = np.random.choice(len(rl_states), max_samples, replace=False)
-        rl_states = rl_states[indices]
-        rewards = rewards[indices]
-        print(f"Limited training data to {max_samples} samples for stability (from {len(rl_states)} total)")
-    else:
-        print(f"Using all {len(rl_states)} samples for training")
-    
-    env = TSTEnv(rl_states, rewards)
-    agent = PPOAgent(state_dim=259) if agent_type == "PPO" else SACAgent(state_dim=259)
-    
-    # Move agent networks to GPU
-    if agent_type == "PPO":
-        agent.policy = agent.policy.to(device)
-        agent.old_policy = agent.old_policy.to(device)
-        agent.value_net = agent.value_net.to(device)
-        print(f"PPO networks moved to {device}")
-    else:  # SAC
-        agent.policy_net = agent.policy_net.to(device)
-        agent.q_net1 = agent.q_net1.to(device)
-        agent.q_net2 = agent.q_net2.to(device)
-        agent.value_net = agent.value_net.to(device)
-        agent.target_value_net = agent.target_value_net.to(device)
-        print(f"SAC networks moved to {device}")
-
-    for epoch in range(epochs):
-        state = env.reset()
-        done = False
-
-        batch_states = []
-        batch_actions = []
-        batch_rewards = []
-        batch_log_probs = []
-        batch_values = []
-
-        while not done:
-            # Pass the full state dictionary to the agent (includes portfolio info)
-            if agent_type == "PPO":
-                action, log_prob = agent.select_action(state)  # Pass full state dict
-                value = agent.evaluate_value(state)           # Pass full state dict
-            else:  # SAC
-                action, log_prob = agent.select_action(state)  # Pass full state dict
-                value = agent.evaluate_value(state)           # Pass full state dict
-
-            next_state, reward, done, _ = env.step(action)
-
-            # Store the TST RL state for batch processing (256-dim)
-            batch_states.append(state["rl_state"])  # Extract 256-dim for batch
-            batch_actions.append(action)
-            batch_rewards.append(reward)
-            batch_log_probs.append(log_prob)
-            batch_values.append(value)
-
-            state = next_state
-
-        # Compute advantages and returns
-        values = [v.item() if isinstance(v, torch.Tensor) else v for v in batch_values]
-        if use_gae:
-            advantages = compute_gae(batch_rewards, values, gamma=gamma, lam=lam)
-            returns = [a + v for a, v in zip(advantages, values)]
-        else:
-            returns = compute_returns(batch_rewards, gamma=gamma)
-            advantages = [r - v for r, v in zip(returns, values)]
-
-        # Convert to numpy arrays first for efficient tensor conversion
-        batch_states_array = np.array(batch_states)
-        batch_actions_array = np.array(batch_actions)
-        returns_array = np.array(returns)
-        advantages_array = np.array(advantages)
-        
-        # Convert 256-dim states to 259-dim states for batch processing
-        # Add dummy portfolio info to each state for consistency with agent expectations
-        dummy_portfolio = np.array([1.0, 0.0, 0.0])  # 100% cash, 0% stock, baseline portfolio
-        batch_states_259 = np.array([np.concatenate([state, dummy_portfolio]) for state in batch_states_array])
-        
-        # Move tensors to GPU
-        transitions = {
-            'states': torch.FloatTensor(batch_states_259).to(device),  # Move to GPU
-            'actions': torch.LongTensor(batch_actions_array).to(device),  # Move to GPU
-            'log_probs': torch.stack(batch_log_probs).to(device),  # Move to GPU
-            'returns': torch.FloatTensor(returns_array).to(device),  # Move to GPU
-            'advantages': torch.FloatTensor(advantages_array).to(device),  # Move to GPU
-            'next_states': torch.FloatTensor(np.concatenate([batch_states_259[1:], [batch_states_259[-1]]])).to(device),  # for SAC, move to GPU
-            'dones': torch.FloatTensor([0.0] * (len(batch_rewards) - 1) + [1.0]).to(device)  # Move to GPU
-        }
-
-        # Update
-        loss_info = agent.update_policy(transitions)
-        
-        # GPU memory monitoring
-        if device.type == 'cuda':
-            gpu_memory_used = torch.cuda.memory_allocated(device) / 1024**3  # GB
-            gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**3  # GB
-            gpu_memory_info = f" | GPU: {gpu_memory_used:.2f}GB used, {gpu_memory_cached:.2f}GB cached"
-        else:
-            gpu_memory_info = ""
-        
-        # Handle both old (float) and new (dict) loss formats
-        if isinstance(loss_info, dict):
-            total_loss = loss_info['total_loss']
-            policy_loss = loss_info['policy_loss']
-            value_loss = loss_info['value_loss']
-            current_lr = loss_info.get('current_lr', 'N/A')
-            value_weight = loss_info.get('value_weight', 'N/A')
-            loss_ratio = loss_info.get('loss_ratio', 'N/A')
-            lr_changed = loss_info.get('lr_changed', False)
-            lr_reason = loss_info.get('lr_reason', '')
-            
-            # Base loss information
-            loss_str = f"Epoch {epoch + 1}/{epochs} | Total: {total_loss:.4f} | Policy: {policy_loss:.4f} | Value: {value_loss:.4f}"
-            
-            # Add SAC-specific Q losses if available
-            if 'q_loss_avg' in loss_info:
-                q_loss_avg = loss_info['q_loss_avg']
-                loss_str += f" | Q-Avg: {q_loss_avg:.4f}"
-            
-            # Add adaptive parameters
-            if current_lr != 'N/A':
-                loss_str += f" | LR: {current_lr:.2e}"
-            if value_weight != 'N/A':
-                loss_str += f" | VW: {value_weight:.2f}"
-            if loss_ratio != 'N/A':
-                loss_str += f" | Ratio: {loss_ratio:.1f}"
-            
-            # Add GPU info
-            loss_str += gpu_memory_info
-            
-            print(loss_str)
-            
-            # Show learning rate changes
-            if lr_changed:
-                print(f"    🔄 LR adjusted: {lr_reason} (Ratio: {loss_ratio:.1f})")
-            
-        else:
-            print(f"Epoch {epoch + 1}/{epochs} | Loss: {loss_info:.4f}{gpu_memory_info}")
-
-    print(f"{agent_type} training completed on {device}.")
-    
-    # Final GPU memory cleanup
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-        print(f"GPU memory cleared after training.")
-    
-    return agent
 
 def generate_rl_states_from_tst(
     ticker: str = None,
@@ -473,19 +322,6 @@ def train_rl_agent_with_tst(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Starting {agent_type} training on {device}")
 
-    if agent_type == "PPO":
-        agent.policy = agent.policy.to(device)
-        agent.old_policy = agent.old_policy.to(device)
-        agent.value_net = agent.value_net.to(device)
-    else:  # SAC
-        agent.policy_net = agent.policy_net.to(device)
-        agent.q_net1 = agent.q_net1.to(device)
-        agent.q_net2 = agent.q_net2.to(device)
-        agent.value_net = agent.value_net.to(device)
-        agent.target_value_net = agent.target_value_net.to(device)
-    
-    print(f"{agent_type} networks moved to {device}")
-    
     env = TSTEnv(final_rl_states, final_prices)
 
     for epoch in range(epochs):
@@ -502,7 +338,7 @@ def train_rl_agent_with_tst(
         while not done:
             if agent_type == "PPO":
                 action, log_prob = agent.select_action(state)
-                value = agent.evaluate_value(state)
+                value = agent.get_value(state)
             else:  # SAC
                 action, log_prob = agent.select_action(state)
                 value = agent.evaluate_value(state)
@@ -575,8 +411,8 @@ def train_rl_agent_with_tst(
             epoch_agent_path = os.path.join(run_output_dir, epoch_agent_filename)
             
             # Determine fallback config based on agent type
-            if agent_type == "PPO":
-                fallback_config = agent.policy.state_dict()
+        if agent_type == "PPO":
+                fallback_config = agent.actor.state_dict()
             else: # SAC
                 fallback_config = agent.policy_net.state_dict()
                 
@@ -586,15 +422,15 @@ def train_rl_agent_with_tst(
             }
             if agent_type == "PPO":
                 save_data_epoch.update({
-                    'policy_state_dict': agent.policy.state_dict(),
-                    'value_net_state_dict': agent.value_net.state_dict()
+                    'actor_state_dict': agent.actor.state_dict(),
+                    'critic_state_dict': agent.critic.state_dict()
                 })
             else: # SAC
                 save_data_epoch.update({
-                    'policy_net_state_dict': agent.policy_net.state_dict(),
-                    'q_net1_state_dict': agent.q_net1.state_dict(),
-                    'q_net2_state_dict': agent.q_net2.state_dict(),
-                    'value_net_state_dict': agent.value_net.state_dict(),
+                'policy_net_state_dict': agent.policy_net.state_dict(),
+                'q_net1_state_dict': agent.q_net1.state_dict(),
+                'q_net2_state_dict': agent.q_net2.state_dict(),
+                'value_net_state_dict': agent.value_net.state_dict(),
                     'target_value_net_state_dict': agent.target_value_net.state_dict()
                 })
             torch.save(save_data_epoch, epoch_agent_path)
@@ -790,9 +626,9 @@ def train_rl_agent_multi_ticker(
     print(f"\nStarting {agent_type} multi-ticker training on {device}")
 
     if agent_type == "PPO":
-        agent.policy = agent.policy.to(device)
-        agent.old_policy = agent.old_policy.to(device)
-        agent.value_net = agent.value_net.to(device)
+        agent.actor = agent.actor.to(device)
+        agent.actor_old = agent.actor_old.to(device)
+        agent.critic = agent.critic.to(device)
     else:  # SAC
         agent.policy_net = agent.policy_net.to(device)
         agent.q_net1 = agent.q_net1.to(device)
@@ -816,7 +652,7 @@ def train_rl_agent_multi_ticker(
         while not done:
             if agent_type == "PPO":
                 action, log_prob = agent.select_action(state)
-                value = agent.evaluate_value(state)
+                value = agent.get_value(state)
             else:  # SAC
                 action, log_prob = agent.select_action(state)
                 value = agent.evaluate_value(state)
@@ -888,8 +724,8 @@ def train_rl_agent_multi_ticker(
             epoch_agent_path = os.path.join(run_output_dir, epoch_agent_filename)
             
             # Determine fallback config based on agent type
-            if agent_type == "PPO":
-                fallback_config = agent.policy.state_dict()
+        if agent_type == "PPO":
+                fallback_config = agent.actor.state_dict()
             else: # SAC
                 fallback_config = agent.policy_net.state_dict()
                 
@@ -899,15 +735,15 @@ def train_rl_agent_multi_ticker(
             }
             if agent_type == "PPO":
                 save_data_epoch.update({
-                    'policy_state_dict': agent.policy.state_dict(),
-                    'value_net_state_dict': agent.value_net.state_dict()
+                    'actor_state_dict': agent.actor.state_dict(),
+                    'critic_state_dict': agent.critic.state_dict()
                 })
             else: # SAC
                 save_data_epoch.update({
-                    'policy_net_state_dict': agent.policy_net.state_dict(),
-                    'q_net1_state_dict': agent.q_net1.state_dict(),
-                    'q_net2_state_dict': agent.q_net2.state_dict(),
-                    'value_net_state_dict': agent.value_net.state_dict(),
+                'policy_net_state_dict': agent.policy_net.state_dict(),
+                'q_net1_state_dict': agent.q_net1.state_dict(),
+                'q_net2_state_dict': agent.q_net2.state_dict(),
+                'value_net_state_dict': agent.value_net.state_dict(),
                     'target_value_net_state_dict': agent.target_value_net.state_dict()
                 })
             torch.save(save_data_epoch, epoch_agent_path)
