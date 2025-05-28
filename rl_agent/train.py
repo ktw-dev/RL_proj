@@ -304,6 +304,14 @@ def train_rl_agent_with_tst(
     epochs_without_improvement = 0
     patience = 10  # Stop after 10 epochs without improvement in value loss
     
+    # Initialize agent
+    if agent_type == "PPO":
+        agent = PPOAgent(state_dim=260)
+    elif agent_type == "SAC":
+        agent = SACAgent(state_dim=260)
+    else:
+        raise ValueError(f"Unsupported agent type: {agent_type}")
+    
     # Create directory for epoch-wise model saving
     if save_agent:
         if output_dir is None:
@@ -360,16 +368,17 @@ def train_rl_agent_with_tst(
             returns = compute_returns(batch_rewards, gamma=gamma)
             advantages = [r - v for r, v in zip(returns, values_np)]
 
-        dummy_portfolio = np.array([1.0, 0.0, 0.0])
-        batch_states_259 = np.array([np.concatenate([s, dummy_portfolio]) for s in batch_states])
+        # cash_ratio, stock_ratio, portfolio_val_norm, has_shares_flag (0 for no shares initially)
+        dummy_portfolio = np.array([1.0, 0.0, 0.0, 0.0])
+        batch_states_260 = np.array([np.concatenate([s, dummy_portfolio]) for s in batch_states])
         
         transitions = {
-            'states': torch.FloatTensor(batch_states_259).to(device),
+            'states': torch.FloatTensor(batch_states_260).to(device),
             'actions': torch.LongTensor(batch_actions).to(device),
             'log_probs': torch.stack(batch_log_probs).to(device),
             'returns': torch.FloatTensor(returns).to(device),
             'advantages': torch.FloatTensor(advantages).to(device),
-            'next_states': torch.FloatTensor(np.concatenate([batch_states_259[1:], [batch_states_259[-1]]])).to(device),
+            'next_states': torch.FloatTensor(np.concatenate([batch_states_260[1:], [batch_states_260[-1]]])).to(device),
             'dones': torch.FloatTensor([0.0] * (len(batch_rewards) - 1) + [1.0]).to(device)
         }
 
@@ -411,7 +420,7 @@ def train_rl_agent_with_tst(
             epoch_agent_path = os.path.join(run_output_dir, epoch_agent_filename)
             
             # Determine fallback config based on agent type
-        if agent_type == "PPO":
+            if agent_type == "PPO":
                 fallback_config = agent.actor.state_dict()
             else: # SAC
                 fallback_config = agent.policy_net.state_dict()
@@ -427,10 +436,10 @@ def train_rl_agent_with_tst(
                 })
             else: # SAC
                 save_data_epoch.update({
-                'policy_net_state_dict': agent.policy_net.state_dict(),
-                'q_net1_state_dict': agent.q_net1.state_dict(),
-                'q_net2_state_dict': agent.q_net2.state_dict(),
-                'value_net_state_dict': agent.value_net.state_dict(),
+                    'policy_net_state_dict': agent.policy_net.state_dict(),
+                    'q_net1_state_dict': agent.q_net1.state_dict(),
+                    'q_net2_state_dict': agent.q_net2.state_dict(),
+                    'value_net_state_dict': agent.value_net.state_dict(),
                     'target_value_net_state_dict': agent.target_value_net.state_dict()
                 })
             torch.save(save_data_epoch, epoch_agent_path)
@@ -491,7 +500,7 @@ def train_rl_agent_multi_ticker(
     output_dir: str = None,
     max_tickers: int = 20,
     min_samples_per_ticker: int = 100,
-    max_samples: int = 50000
+    max_samples: int = 129723
 ):
     """
     Train RL agent on multiple tickers for better generalization.
@@ -599,7 +608,12 @@ def train_rl_agent_multi_ticker(
     print(f"  Data shuffled for better training")
     
     # Initialize agent (moved here to avoid re-initialization)
-    agent = PPOAgent(state_dim=259) if agent_type == "PPO" else SACAgent(state_dim=259)
+    if agent_type == "PPO":
+        agent = PPOAgent(state_dim=260)
+    elif agent_type == "SAC":
+        agent = SACAgent(state_dim=260)
+    else:
+        raise ValueError(f"Unsupported agent type: {agent_type}")
     
     # --- Training Loop moved to here from train_rl_agent_with_tst --- 
     # Initialize early stopping parameters
@@ -674,16 +688,17 @@ def train_rl_agent_multi_ticker(
             returns = compute_returns(batch_rewards, gamma=gamma)
             advantages = [r - v for r, v in zip(returns, values_np)]
 
-        dummy_portfolio = np.array([1.0, 0.0, 0.0])
-        batch_states_259 = np.array([np.concatenate([s, dummy_portfolio]) for s in batch_states])
+        # cash_ratio, stock_ratio, portfolio_val_norm, has_shares_flag (0 for no shares initially)
+        dummy_portfolio = np.array([1.0, 0.0, 0.0, 0.0])
+        batch_states_260 = np.array([np.concatenate([s, dummy_portfolio]) for s in batch_states])
         
         transitions = {
-            'states': torch.FloatTensor(batch_states_259).to(device),
+            'states': torch.FloatTensor(batch_states_260).to(device),
             'actions': torch.LongTensor(batch_actions).to(device),
             'log_probs': torch.stack(batch_log_probs).to(device),
             'returns': torch.FloatTensor(returns).to(device),
             'advantages': torch.FloatTensor(advantages).to(device),
-            'next_states': torch.FloatTensor(np.concatenate([batch_states_259[1:], [batch_states_259[-1]]])).to(device),
+            'next_states': torch.FloatTensor(np.concatenate([batch_states_260[1:], [batch_states_260[-1]]])).to(device),
             'dones': torch.FloatTensor([0.0] * (len(batch_rewards) - 1) + [1.0]).to(device)
         }
 
@@ -724,7 +739,7 @@ def train_rl_agent_multi_ticker(
             epoch_agent_path = os.path.join(run_output_dir, epoch_agent_filename)
             
             # Determine fallback config based on agent type
-        if agent_type == "PPO":
+            if agent_type == "PPO":
                 fallback_config = agent.actor.state_dict()
             else: # SAC
                 fallback_config = agent.policy_net.state_dict()
@@ -740,10 +755,10 @@ def train_rl_agent_multi_ticker(
                 })
             else: # SAC
                 save_data_epoch.update({
-                'policy_net_state_dict': agent.policy_net.state_dict(),
-                'q_net1_state_dict': agent.q_net1.state_dict(),
-                'q_net2_state_dict': agent.q_net2.state_dict(),
-                'value_net_state_dict': agent.value_net.state_dict(),
+                    'policy_net_state_dict': agent.policy_net.state_dict(),
+                    'q_net1_state_dict': agent.q_net1.state_dict(),
+                    'q_net2_state_dict': agent.q_net2.state_dict(),
+                    'value_net_state_dict': agent.value_net.state_dict(),
                     'target_value_net_state_dict': agent.target_value_net.state_dict()
                 })
             torch.save(save_data_epoch, epoch_agent_path)
@@ -827,8 +842,8 @@ def main():
                        help='Minimum samples required per ticker')
     parser.add_argument('--tickers', nargs='+', 
                        help='Specific tickers to use (e.g., --tickers AAPL MSFT GOOGL)')
-    parser.add_argument('--max_samples', type=int, default=50000,
-                       help='Maximum number of samples to use for training (default: 50000)')
+    parser.add_argument('--max_samples', type=int, default=129723,
+                       help='Maximum number of samples to use for training (default: 130000)')
     
     args = parser.parse_args()
     
@@ -921,7 +936,14 @@ def main():
         test_rl_state = result['rl_states_data'][test_ticker]['rl_states'][0]
         
         # Test predict_action interface
-        state_vector = {"tst_rl_state": test_rl_state}
+        # state_vector = {"tst_rl_state": test_rl_state}
+        # For testing, need to simulate the full state dict including portfolio info for _prepare_state
+        state_vector = {
+            "tst_rl_state": test_rl_state,
+            "cash": 10000.0, # Dummy cash
+            "shares": 0,      # Dummy shares (implies has_shares_flag = 0.0 in agent._prepare_state)
+            "current_price": result['rl_states_data'][test_ticker]['prices'][0] # Dummy price
+        }
         action_result = agent.predict_action(state_vector)
         print(f"Test action (using {test_ticker} RL state): {action_result}")
         

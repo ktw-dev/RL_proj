@@ -7,12 +7,13 @@ import torch.nn.functional as F
 import numpy as np
 
 class PPOAgent:
-    def __init__(self, state_dim=259, action_dim=3, lr=3e-4, gamma=0.99, 
+    def __init__(self, state_dim=260, action_dim=3, lr=3e-4, gamma=0.99, 
                  k_epochs=4, eps_clip=0.2, entropy_coeff=0.01, value_loss_coeff=0.5, max_grad_norm=0.5):
         
         self.tst_dim = 256  # Assuming TST features are 256
-        self.portfolio_dim = 3 # cash_ratio, stock_ratio, portfolio_value_normalized
-        self.total_state_dim = state_dim
+        # cash_ratio, stock_ratio, portfolio_value_normalized, has_shares_flag
+        self.portfolio_dim = 4 
+        self.total_state_dim = state_dim # Should be tst_dim + portfolio_dim
 
         self.lr = lr
         self.gamma = gamma
@@ -74,6 +75,7 @@ class PPOAgent:
             cash = state_input.get("cash", 10000.0)
             shares = state_input.get("shares", 0.0)
             price = state_input.get("current_price", state_input.get("price", 100.0))
+            has_shares_flag = 1.0 if shares > 0 else 0.0 # Get has_shares_flag from shares
             
             portfolio_value = cash + shares * price
             cash_ratio = cash / portfolio_value if portfolio_value > 0 else 1.0
@@ -81,13 +83,13 @@ class PPOAgent:
             # Normalize portfolio value (e.g., log-normalized relative to initial cash)
             portfolio_value_normalized = np.log(portfolio_value / 10000.0 + 1e-9) # Added small epsilon
             
-            portfolio_info = np.array([cash_ratio, stock_ratio, portfolio_value_normalized])
+            portfolio_info = np.array([cash_ratio, stock_ratio, portfolio_value_normalized, has_shares_flag])
             full_state = np.concatenate([tst_state, portfolio_info])
             
         elif isinstance(state_input, np.ndarray):
             if state_input.shape[0] == self.tst_dim:
                 # Training: TST features only, add dummy portfolio info (neutral/initial state)
-                dummy_portfolio = np.array([1.0, 0.0, 0.0]) 
+                dummy_portfolio = np.array([1.0, 0.0, 0.0, 0.0]) # cash_ratio, stock_ratio, portfolio_val_norm, has_shares_flag(0 for no shares)
                 full_state = np.concatenate([state_input, dummy_portfolio])
             elif state_input.shape[0] == self.total_state_dim:
                 full_state = state_input

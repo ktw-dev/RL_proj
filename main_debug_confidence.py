@@ -629,6 +629,7 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
             confidence_factors = []
             
             # Signal 1: RL State 기반
+            print(f"DEBUG_CONFIDENCE: rl_state_mean for Signal 1 = {rl_state_mean:.4f}")
             if rl_state_mean > 0.0025: # Adjusted threshold
                 direction_signals.append("UP")
                 confidence_factors.append(min(0.4, abs(rl_state_mean) * 100)) # Adjusted multiplier
@@ -637,9 +638,10 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
                 confidence_factors.append(min(0.4, abs(rl_state_mean) * 100)) # Adjusted multiplier
             else:
                 direction_signals.append("SIDEWAYS")
-                confidence_factors.append(0.1) # Ensure this is present for SIDEWAYS
+            print(f"DEBUG_CONFIDENCE: After Signal 1 - direction_signals: {direction_signals}, confidence_factors: {confidence_factors}")
             
             # Signal 2: 주가 예측 기반
+            print(f"DEBUG_CONFIDENCE: price_change_rate for Signal 2 = {price_change_rate:.4f}")
             if price_change_rate > 0.02:  # 2% 이상 상승
                 direction_signals.append("UP")
                 confidence_factors.append(min(0.4, abs(price_change_rate) * 10))
@@ -649,15 +651,19 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
             else:
                 direction_signals.append("SIDEWAYS")
                 confidence_factors.append(0.1)
+            print(f"DEBUG_CONFIDENCE: After Signal 2 - direction_signals: {direction_signals}, confidence_factors: {confidence_factors}")
             
             # Signal 3: Monte Carlo 불확실성 기반
             uncertainty_penalty = min(0.3, mc_rl_mean_var * 1000 + mc_price_var * 100)
+            print(f"DEBUG_CONFIDENCE: mc_rl_mean_var = {mc_rl_mean_var:.6f}, mc_price_var = {mc_price_var:.6f}")
+            print(f"DEBUG_CONFIDENCE: Calculated uncertainty_penalty = {uncertainty_penalty:.3f} (raw: {mc_rl_mean_var * 1000 + mc_price_var * 100:.3f})")
             
             # 5.7. 최종 방향 및 신뢰도 결정
             # 방향 결정 (다수결)
             up_count = direction_signals.count("UP")
             down_count = direction_signals.count("DOWN")
             sideways_count = direction_signals.count("SIDEWAYS")
+            print(f"DEBUG_CONFIDENCE: Counts - UP: {up_count}, DOWN: {down_count}, SIDEWAYS: {sideways_count}")
             
             if up_count > down_count and up_count > sideways_count:
                 predicted_direction = "UP"
@@ -665,18 +671,25 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
                 predicted_direction = "DOWN"
             else:
                 predicted_direction = "SIDEWAYS"
+            print(f"DEBUG_CONFIDENCE: Determined predicted_direction = {predicted_direction}")
             
             # 신뢰도 계산
             base_confidence = np.mean(confidence_factors)
+            print(f"DEBUG_CONFIDENCE: Calculated base_confidence = {base_confidence:.3f} (from factors: {confidence_factors})")
             
             # 신호 일치도 보너스
             max_signal_count = max(up_count, down_count, sideways_count)
-            signal_consistency = max_signal_count / len(direction_signals)
+            signal_consistency = max_signal_count / len(direction_signals) if len(direction_signals) > 0 else 0
             consistency_bonus = (signal_consistency - 0.5) * 0.4  # 0.5는 랜덤, 1.0은 완전 일치
+            print(f"DEBUG_CONFIDENCE: max_signal_count = {max_signal_count}, len(direction_signals) = {len(direction_signals)}")
+            print(f"DEBUG_CONFIDENCE: Calculated signal_consistency = {signal_consistency:.3f}")
+            print(f"DEBUG_CONFIDENCE: Calculated consistency_bonus = {consistency_bonus:.3f}")
             
             # 불확실성 페널티 적용
-            final_confidence = base_confidence + consistency_bonus - uncertainty_penalty
-            final_confidence = max(0.1, min(0.95, final_confidence))  # 0.1~0.95 범위로 제한
+            final_confidence_before_clamp = base_confidence + consistency_bonus - uncertainty_penalty
+            print(f"DEBUG_CONFIDENCE: final_confidence_before_clamp = {final_confidence_before_clamp:.3f} (base: {base_confidence:.3f} + bonus: {consistency_bonus:.3f} - penalty: {uncertainty_penalty:.3f})")
+            final_confidence = max(0.1, min(0.95, final_confidence_before_clamp))  # 0.1~0.95 범위로 제한
+            print(f"DEBUG_CONFIDENCE: final_confidence_after_clamp = {final_confidence:.3f}")
             
             print(f"=== Advanced TST Prediction Analysis ===")
             print(f"RL State: mean={rl_state_mean:.4f}, std={rl_state_std:.4f}")
@@ -922,6 +935,91 @@ def generate_final_recommendation(tst_prediction: dict, rl_decision: dict, ticke
     print(recommendation)
     return recommendation
 
+# --- New Investigation Function ---
+def investigate_rl_state_mean_distribution():
+    print("\n--- Investigating rl_state_mean Distribution Across All Supported Tickers ---")
+    all_rl_state_means = []
+    days_to_analyze = 7 # Consistent with run_trading_bot
+
+    # Setup device for TST model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    for ticker in SUPPORTED_TICKERS:
+        print(f"\nProcessing ticker: {ticker}...")
+        try:
+            # 1. Collect TA data
+            ta_df_raw = collect_realtime_ta_data(
+                ticker=ticker,
+                business_days=days_to_analyze,
+                lookback_period=TA_LOOKBACK_PERIOD
+            )
+            if ta_df_raw.empty:
+                print(f"❌ Failed to collect TA data for {ticker}. Skipping.")
+                continue
+
+            # 2. Collect News data
+            news_df_raw = collect_realtime_news_data(
+                ticker=ticker,
+                analysis_days=days_to_analyze
+            )
+
+            # 3. Prepare data for TST model (similar to run_trading_bot)
+            if not news_df_raw.empty:
+                news_df_raw['combined_score'] = (
+                    news_df_raw['avg_sentiment_positive'] - news_df_raw['avg_sentiment_negative'] +
+                    news_df_raw['weekend_effect_positive'] - news_df_raw['weekend_effect_negative']
+                )
+                daily_sentiment_scores = news_df_raw['combined_score']
+            else:
+                daily_sentiment_scores = pd.Series(dtype=float, name='combined_score')
+
+            ta_df_raw['Date'] = pd.to_datetime(ta_df_raw['Date'])
+            ta_df_raw.set_index('Date', inplace=True)
+
+            full_technical_data = ta_df_raw.copy()
+            # Ensure the index is date objects, not datetime64, for consistency with predict_price_with_tst_model's internal handling
+            full_technical_data.index = pd.to_datetime(full_technical_data.index).date
+            full_technical_data.index.name = 'Date' # Set index name
+            full_technical_data.fillna(0.0, inplace=True) # Fill NaNs that might occur
+
+            # 4. Predict with TST model
+            tst_prediction = predict_price_with_tst_model(
+                technical_data=full_technical_data, # Pass the prepared DataFrame
+                daily_sentiment=daily_sentiment_scores, # Pass the prepared Series
+                ticker=ticker
+            )
+
+            if tst_prediction and "rl_state_mean" in tst_prediction and tst_prediction["rl_state_mean"] is not None:
+                rl_mean = tst_prediction["rl_state_mean"]
+                all_rl_state_means.append(rl_mean)
+                print(f"✅ {ticker}: rl_state_mean = {rl_mean:.4f}")
+            else:
+                print(f"⚠️ Could not get rl_state_mean for {ticker}. TST prediction: {tst_prediction}")
+
+        except Exception as e:
+            print(f"❌ Error processing {ticker}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    if not all_rl_state_means:
+        print("\nNo rl_state_mean values were collected.")
+        return
+
+    means_array = np.array(all_rl_state_means)
+    print("\n--- Statistics for rl_state_mean ---")
+    print(f"Number of tickers processed: {len(SUPPORTED_TICKERS)}")
+    print(f"Number of rl_state_mean values collected: {len(means_array)}")
+    if len(means_array) > 0:
+        print(f"Mean: {np.mean(means_array):.4f}")
+        print(f"Median: {np.median(means_array):.4f}")
+        print(f"Standard Deviation: {np.std(means_array):.4f}")
+        print(f"Min: {np.min(means_array):.4f}")
+        print(f"Max: {np.max(means_array):.4f}")
+        print(f"25th Percentile: {np.percentile(means_array, 25):.4f}")
+        print(f"75th Percentile: {np.percentile(means_array, 75):.4f}")
+    print("--------------------------------------")
+
 # --- Main Execution Flow --- 
 def run_trading_bot():
     """Main function to run the trading bot logic.
@@ -1021,4 +1119,5 @@ def run_trading_bot():
         # In a real application, add more detailed error logging here
 
 if __name__ == "__main__":
-    run_trading_bot() 
+    # run_trading_bot()
+    investigate_rl_state_mean_distribution() 

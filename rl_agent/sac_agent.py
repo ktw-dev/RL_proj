@@ -45,10 +45,10 @@ class PolicyNetwork(nn.Module):
         return self.net(state)
 
 class SACAgent:
-    def __init__(self, state_dim=259, action_dim=3, lr=3e-4, gamma=0.99, tau=0.005):
-        # TST features (256) + portfolio info (3: cash_ratio, stock_ratio, portfolio_value_normalized)
+    def __init__(self, state_dim=260, action_dim=3, lr=3e-4, gamma=0.99, tau=0.005):
+        # TST features (256) + portfolio info (4: cash_ratio, stock_ratio, portfolio_value_normalized, has_shares_flag)
         self.tst_dim = 256
-        self.portfolio_dim = 3
+        self.portfolio_dim = 4
         self.total_state_dim = state_dim
         
         # Learning rate scheduling parameters
@@ -132,21 +132,22 @@ class SACAgent:
             cash = state_input.get("cash", 10000.0)
             shares = state_input.get("shares", 0.0)
             price = state_input.get("current_price", state_input.get("price", 100.0))
+            has_shares_flag = 1.0 if shares > 0 else 0.0
             
             # Calculate portfolio metrics
             portfolio_value = cash + shares * price
             cash_ratio = cash / portfolio_value if portfolio_value > 0 else 1.0
             stock_ratio = (shares * price) / portfolio_value if portfolio_value > 0 else 0.0
-            portfolio_value_normalized = np.log(portfolio_value / 10000.0)  # Log-normalized relative to initial cash
+            portfolio_value_normalized = np.log(portfolio_value / 10000.0 + 1e-9)
             
             # Combine TST features with portfolio info
-            portfolio_info = np.array([cash_ratio, stock_ratio, portfolio_value_normalized])
+            portfolio_info = np.array([cash_ratio, stock_ratio, portfolio_value_normalized, has_shares_flag])
             full_state = np.concatenate([tst_state, portfolio_info])
             
         elif isinstance(state_input, np.ndarray):
             if state_input.shape[0] == self.tst_dim:
                 # Training mode: TST features only, add dummy portfolio info
-                dummy_portfolio = np.array([1.0, 0.0, 0.0])  # 100% cash, 0% stock, baseline portfolio
+                dummy_portfolio = np.array([1.0, 0.0, 0.0, 0.0])
                 full_state = np.concatenate([state_input, dummy_portfolio])
             else:
                 # Already includes portfolio info
@@ -278,10 +279,21 @@ class SACAgent:
         return loss_info
 
     def predict_action(self, state_vector):
-        action, _ = self.select_action(state_vector)  # 전체 state_vector 전달
+        with torch.no_grad():
+            state_tensor = self._prepare_state(state_vector)
+            
+            # Get action probabilities from the policy network
+            action_probs = self.policy_net(state_tensor) # Output shape: (action_dim,)
+
+            # For deterministic inference, choose the action with the highest probability
+            action_idx = torch.argmax(action_probs, dim=-1).item() # Returns index 0, 1, or 2
+
+        # Consistent mapping with PPO and TSTEnv: 0:HOLD, 1:BUY, 2:SELL
+        action_map = ["HOLD", "BUY", "SELL"]
+        
         return {
-            "action": ["BUY", "SELL", "HOLD"][action],
-            "reason": "SAC policy output",
+            "action": action_map[action_idx],
+            "reason": f"SAC policy output {action_probs.cpu().numpy()}",
             "target_price": state_vector.get("current_price", 0)
         }
 

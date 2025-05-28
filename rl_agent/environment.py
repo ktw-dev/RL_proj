@@ -23,12 +23,15 @@ class TSTEnv:
             "tst_rl_state": self.rl_states[self.index],  # For compatibility with agent interface
             "cash": self.cash,
             "shares": self.shares,
+            "has_shares_flag": 1.0 if self.shares > 0 else 0.0,
             "price": self.prices[self.index],
             "current_price": self.prices[self.index],  # For compatibility
         }
 
     def step(self, action):
         # action: 0 = HOLD, 1 = BUY, 2 = SELL
+        _sell_with_no_shares_penalty_incurred = False # Initialize here
+        penalty_reward = -1.0 # Define penalty_reward here as well for clarity, in case it's only set in the SELL block
         price = self.prices[self.index]
         
         # Prevent extreme price values that cause overflow
@@ -58,7 +61,13 @@ class TSTEnv:
                 pass  # Skip action if calculation fails
 
         elif action == 2:  # SELL
-            if self.shares > 0:
+            if self.shares <= 0: # Agent tries to sell with no shares
+                # Apply a large penalty and effectively do nothing (like HOLD)
+                # The reward calculation later will be based on this penalty
+                # We will overwrite the normal portfolio-based reward if this condition is met.
+                # penalty_reward = -1.0 # No longer needed here
+                _sell_with_no_shares_penalty_incurred = True # Set to true if this condition is met
+            else: # Normal sell logic if shares are held
                 try:
                     revenue = self.shares * price * (1 - self.trading_fee)
                     # Prevent overflow in revenue calculation
@@ -70,6 +79,9 @@ class TSTEnv:
                         self.shares = 0
                 except (OverflowError, ValueError):
                     self.shares = 0  # Emergency sell
+            # This variable will be checked after normal reward calculation
+            # to override if a penalty was incurred.
+            # _sell_with_no_shares_penalty_incurred = self.shares <= 0 and action == 2 # Old logic, now set directly above
 
         self.index += 1
         if self.index >= len(self.prices):
@@ -97,6 +109,10 @@ class TSTEnv:
         
         # Clip reward to prevent extreme values
         reward = np.clip(reward, -0.1, 0.1)  # Limit to ±10% per step
+
+        # Override reward if sell with no shares penalty was incurred
+        if _sell_with_no_shares_penalty_incurred:
+            reward = penalty_reward # Use the predefined penalty
 
         return self._get_state(), reward, self.done, {}
 
