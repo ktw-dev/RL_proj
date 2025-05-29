@@ -629,32 +629,47 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
             confidence_factors = []
             
             # Signal 1: RL State 기반
-            if rl_state_mean > 0.0025: # Adjusted threshold
+            print(f"DEBUG: rl_state_mean = {rl_state_mean:.4f}")
+            if rl_state_mean > -0.00012: # Adjusted threshold
                 direction_signals.append("UP")
-                confidence_factors.append(min(0.4, abs(rl_state_mean) * 100)) # Adjusted multiplier
-            elif rl_state_mean < -0.0025: # Adjusted threshold
+                factor = min(0.4, abs(rl_state_mean) * 100)
+                confidence_factors.append(factor)
+                print(f"DEBUG: Signal 1 (RL State UP) -> confidence_factor: {factor:.4f}")
+            elif rl_state_mean < -0.00246: # Adjusted threshold
                 direction_signals.append("DOWN")
-                confidence_factors.append(min(0.4, abs(rl_state_mean) * 100)) # Adjusted multiplier
+                factor = min(0.4, abs(rl_state_mean) * 100)
+                confidence_factors.append(factor)
+                print(f"DEBUG: Signal 1 (RL State DOWN) -> confidence_factor: {factor:.4f}")
             else:
                 direction_signals.append("SIDEWAYS")
                 confidence_factors.append(0.1) # Ensure this is present for SIDEWAYS
+                print(f"DEBUG: Signal 1 (RL State SIDEWAYS) -> confidence_factor: 0.1000")
             
             # Signal 2: 주가 예측 기반
+            print(f"DEBUG: price_change_rate = {price_change_rate:.4f}")
             if price_change_rate > 0.02:  # 2% 이상 상승
                 direction_signals.append("UP")
-                confidence_factors.append(min(0.4, abs(price_change_rate) * 10))
+                factor = min(0.4, abs(price_change_rate) * 10)
+                confidence_factors.append(factor)
+                print(f"DEBUG: Signal 2 (Price Change UP) -> confidence_factor: {factor:.4f}")
             elif price_change_rate < -0.02:  # 2% 이상 하락
                 direction_signals.append("DOWN")
-                confidence_factors.append(min(0.4, abs(price_change_rate) * 10))
+                factor = min(0.4, abs(price_change_rate) * 10)
+                confidence_factors.append(factor)
+                print(f"DEBUG: Signal 2 (Price Change DOWN) -> confidence_factor: {factor:.4f}")
             else:
                 direction_signals.append("SIDEWAYS")
                 confidence_factors.append(0.1)
+                print(f"DEBUG: Signal 2 (Price Change SIDEWAYS) -> confidence_factor: 0.1000")
             
             # Signal 3: Monte Carlo 불확실성 기반
             uncertainty_penalty = min(0.3, mc_rl_mean_var * 1000 + mc_price_var * 100)
+            print(f"DEBUG: mc_rl_mean_var = {mc_rl_mean_var:.6f}, mc_price_var = {mc_price_var:.6f}")
+            print(f"DEBUG: uncertainty_penalty = {uncertainty_penalty:.4f}")
             
             # 5.7. 최종 방향 및 신뢰도 결정
             # 방향 결정 (다수결)
+            print(f"DEBUG: direction_signals = {direction_signals}")
             up_count = direction_signals.count("UP")
             down_count = direction_signals.count("DOWN")
             sideways_count = direction_signals.count("SIDEWAYS")
@@ -668,15 +683,21 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
             
             # 신뢰도 계산
             base_confidence = np.mean(confidence_factors)
+            print(f"DEBUG: confidence_factors = {confidence_factors}")
+            print(f"DEBUG: base_confidence = {base_confidence:.4f}")
             
             # 신호 일치도 보너스
             max_signal_count = max(up_count, down_count, sideways_count)
             signal_consistency = max_signal_count / len(direction_signals)
             consistency_bonus = (signal_consistency - 0.5) * 0.4  # 0.5는 랜덤, 1.0은 완전 일치
+            print(f"DEBUG: signal_consistency = {signal_consistency:.4f}")
+            print(f"DEBUG: consistency_bonus = {consistency_bonus:.4f}")
             
             # 불확실성 페널티 적용
-            final_confidence = base_confidence + consistency_bonus - uncertainty_penalty
-            final_confidence = max(0.1, min(0.95, final_confidence))  # 0.1~0.95 범위로 제한
+            final_confidence_before_clipping = base_confidence + consistency_bonus - uncertainty_penalty
+            print(f"DEBUG: final_confidence_before_clipping = {final_confidence_before_clipping:.4f}")
+            final_confidence = max(0.1, min(0.95, final_confidence_before_clipping))  # 0.1~0.95 범위로 제한
+            print(f"DEBUG: final_confidence_after_clipping = {final_confidence:.4f}")
             
             print(f"=== Advanced TST Prediction Analysis ===")
             print(f"RL State: mean={rl_state_mean:.4f}, std={rl_state_std:.4f}")

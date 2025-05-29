@@ -630,24 +630,29 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
             
             # Signal 1: RL State 기반
             print(f"DEBUG_CONFIDENCE: rl_state_mean for Signal 1 = {rl_state_mean:.4f}")
-            if rl_state_mean > 0.0025: # Adjusted threshold
+            if rl_state_mean > 0.0025: # Adjusted threshold from 0.0015 to 0.0025 based on previous observation
                 direction_signals.append("UP")
-                confidence_factors.append(min(0.4, abs(rl_state_mean) * 100)) # Adjusted multiplier
+                factor = min(0.4, abs(rl_state_mean) * 100) # Keep factor calculation
+                confidence_factors.append(factor)
             elif rl_state_mean < -0.0025: # Adjusted threshold
                 direction_signals.append("DOWN")
-                confidence_factors.append(min(0.4, abs(rl_state_mean) * 100)) # Adjusted multiplier
+                factor = min(0.4, abs(rl_state_mean) * 100) # Keep factor calculation
+                confidence_factors.append(factor)
             else:
                 direction_signals.append("SIDEWAYS")
+                confidence_factors.append(0.1) # FIX: Ensure 0.1 is added for SIDEWAYS
             print(f"DEBUG_CONFIDENCE: After Signal 1 - direction_signals: {direction_signals}, confidence_factors: {confidence_factors}")
             
             # Signal 2: 주가 예측 기반
             print(f"DEBUG_CONFIDENCE: price_change_rate for Signal 2 = {price_change_rate:.4f}")
             if price_change_rate > 0.02:  # 2% 이상 상승
                 direction_signals.append("UP")
-                confidence_factors.append(min(0.4, abs(price_change_rate) * 10))
+                factor = min(0.4, abs(price_change_rate) * 10)
+                confidence_factors.append(factor)
             elif price_change_rate < -0.02:  # 2% 이상 하락
                 direction_signals.append("DOWN")
-                confidence_factors.append(min(0.4, abs(price_change_rate) * 10))
+                factor = min(0.4, abs(price_change_rate) * 10)
+                confidence_factors.append(factor)
             else:
                 direction_signals.append("SIDEWAYS")
                 confidence_factors.append(0.1)
@@ -674,11 +679,11 @@ def predict_price_with_tst_model(technical_data: pd.DataFrame, daily_sentiment: 
             print(f"DEBUG_CONFIDENCE: Determined predicted_direction = {predicted_direction}")
             
             # 신뢰도 계산
-            base_confidence = np.mean(confidence_factors)
+            base_confidence = np.mean(confidence_factors) if len(confidence_factors) > 0 else 0
             print(f"DEBUG_CONFIDENCE: Calculated base_confidence = {base_confidence:.3f} (from factors: {confidence_factors})")
             
             # 신호 일치도 보너스
-            max_signal_count = max(up_count, down_count, sideways_count)
+            max_signal_count = max(up_count, down_count, sideways_count) if len(direction_signals) > 0 else 0
             signal_consistency = max_signal_count / len(direction_signals) if len(direction_signals) > 0 else 0
             consistency_bonus = (signal_consistency - 0.5) * 0.4  # 0.5는 랜덤, 1.0은 완전 일치
             print(f"DEBUG_CONFIDENCE: max_signal_count = {max_signal_count}, len(direction_signals) = {len(direction_signals)}")
@@ -1016,8 +1021,12 @@ def investigate_rl_state_mean_distribution():
         print(f"Standard Deviation: {np.std(means_array):.4f}")
         print(f"Min: {np.min(means_array):.4f}")
         print(f"Max: {np.max(means_array):.4f}")
+        print(f"5th Percentile: {np.percentile(means_array, 5):.4f}")
+        print(f"10th Percentile: {np.percentile(means_array, 10):.4f}")
         print(f"25th Percentile: {np.percentile(means_array, 25):.4f}")
         print(f"75th Percentile: {np.percentile(means_array, 75):.4f}")
+        print(f"90th Percentile: {np.percentile(means_array, 90):.4f}")
+        print(f"95th Percentile: {np.percentile(means_array, 95):.4f}")
     print("--------------------------------------")
 
 # --- Main Execution Flow --- 

@@ -192,18 +192,36 @@ class PPOAgent:
     def predict_action(self, state_vector):
         """
         Predicts an action for inference using the current actor network.
+        Also calculates a dynamic target_price based on the action and TST predictions.
         """
         with torch.no_grad():
             state_tensor = self._prepare_state(state_vector)
             # For prediction, use the main actor, not actor_old
             action_probs = self.actor(state_tensor) 
             dist = torch.distributions.Categorical(action_probs)
-            action = dist.sample() 
+            action = dist.sample()
+            action_idx = action.item() # 0:HOLD, 1:BUY, 2:SELL
+
+        current_price = state_vector.get("current_price", 0)
+        # Default to current_price if TST prediction is not available
+        predicted_future_close = state_vector.get("predicted_tst_next_day_close", current_price) 
+
+        BUY_OFFSET_PERCENT = 0.0005  # 0.05%
+        SELL_OFFSET_PERCENT = 0.0005 # 0.05%
+
+        if action_idx == 1: # BUY
+            target_price = current_price * (1 + BUY_OFFSET_PERCENT)
+        elif action_idx == 2: # SELL
+            target_price = predicted_future_close * (1 - SELL_OFFSET_PERCENT)
+        else: # HOLD or any other case
+            target_price = current_price
+        
+        action_map = ["HOLD", "BUY", "SELL"]
         
         return {
-            "action": ["HOLD", "BUY", "SELL"][action.item()], # Assuming 0:HOLD, 1:BUY, 2:SELL
-            "reason": "PPO policy output (inference)",
-            "target_price": state_vector.get("current_price", 0) 
+            "action": action_map[action_idx],
+            "reason": f"PPO policy output (action_probs: {action_probs.cpu().numpy()})", # Added probs for more info
+            "target_price": target_price 
         }
 
     # Removed _adjust_learning_rate and _adjust_loss_weights for a standard PPO
